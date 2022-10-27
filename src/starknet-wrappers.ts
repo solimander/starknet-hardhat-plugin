@@ -1,11 +1,13 @@
 import { Image, ProcessResult } from "@nomiclabs/hardhat-docker";
-import { PLUGIN_NAME } from "./constants";
+import { ABI_SUFFIX, PLUGIN_NAME } from "./constants";
 import { StarknetDockerProxy } from "./starknet-docker-proxy";
 import { StarknetVenvProxy } from "./starknet-venv-proxy";
 import { BlockNumber, InteractChoice } from "./types";
 import { adaptUrl } from "./utils";
 import { getPrefixedCommand, normalizeVenvPath } from "./utils/venv";
 import { ExternalServer } from "./external-server";
+import path from "path";
+import fs from "fs";
 
 interface CompileWrapperOptions {
     file: string;
@@ -18,9 +20,11 @@ interface CompileWrapperOptions {
 
 interface DeclareWrapperOptions {
     contract: string;
+    contractPath: string;
     gatewayUrl: string;
     signature?: string[];
     token?: string;
+    constants?: Record<string, string>;
 }
 
 interface DeployWrapperOptions {
@@ -73,7 +77,11 @@ interface BlockQueryWrapperOptions {
 }
 
 export abstract class StarknetWrapper {
-    constructor(private externalServer: ExternalServer) {}
+    constructor(
+        private externalServer: ExternalServer,
+        private rootPath: string,
+        private artifactsPath: string
+    ) {}
 
     public async execute(
         command: "starknet" | "starknet-compile",
@@ -109,7 +117,10 @@ export abstract class StarknetWrapper {
 
     public abstract compile(options: CompileWrapperOptions): Promise<ProcessResult>;
 
-    public prepareDeclareOptions(options: DeclareWrapperOptions): string[] {
+    public async prepareDeclareOptions(options: DeclareWrapperOptions): Promise<string[]> {
+        if (options.constants) {
+            await this.recompileAndWriteConstantsToOutput(options);
+        }
         const prepared = [
             "declare",
             "--contract",
@@ -128,6 +139,41 @@ export abstract class StarknetWrapper {
         }
 
         return prepared;
+    }
+
+    protected async recompileAndWriteConstantsToOutput(
+        options: DeclareWrapperOptions
+    ): Promise<void> {
+        const originalContract = fs.readFileSync(options.contractPath, "utf8");
+
+        let generatedContract = originalContract;
+        for (const [constant, replacement] of Object.entries(options.constants)) {
+            const regex = new RegExp(`const ${constant}\\s*=\\s*((0x)?[0-9a-fA-F]+)`);
+            generatedContract = generatedContract.replace(
+                regex,
+                `const ${constant} = ${replacement}`
+            );
+        }
+        fs.writeFileSync(options.contractPath, generatedContract);
+
+        const rootRegex = new RegExp(`^${this.rootPath}`);
+        const suffix = options.contractPath.replace(rootRegex, "");
+        const fileName = path.basename(suffix, path.extname(suffix));
+        const dirPath = path.join(this.artifactsPath, suffix);
+        const outputPath = path.join(dirPath, `${fileName}.json`);
+        const abiPath = path.join(dirPath, `${fileName}${ABI_SUFFIX}`);
+        const executed = await this.compile({
+            cairoPath: options.contractPath,
+            file: options.contractPath,
+            output: outputPath,
+            abi: abiPath,
+            accountContract: false,
+            disableHintValidation: true
+        });
+        if (executed.statusCode) {
+            throw new Error(`Recomplication of contract at ${fileName} failed`);
+        }
+        fs.writeFileSync(options.contractPath, originalContract);
     }
 
     public abstract declare(options: DeclareWrapperOptions): Promise<ProcessResult>;
@@ -294,8 +340,18 @@ function getFullImageName(image: Image): string {
 type String2String = { [path: string]: string };
 
 export class DockerWrapper extends StarknetWrapper {
-    constructor(image: Image, rootPath: string, accountPaths: string[], cairoPaths: string[]) {
-        super(new StarknetDockerProxy(image, rootPath, accountPaths, cairoPaths));
+    constructor(
+        image: Image,
+        rootPath: string,
+        artifactsPath: string,
+        accountPaths: string[],
+        cairoPaths: string[]
+    ) {
+        super(
+            new StarknetDockerProxy(image, rootPath, accountPaths, cairoPaths),
+            rootPath,
+            artifactsPath
+        );
         console.log(
             `${PLUGIN_NAME} plugin using dockerized environment (${getFullImageName(image)})`
         );
@@ -309,7 +365,7 @@ export class DockerWrapper extends StarknetWrapper {
 
     public async declare(options: DeclareWrapperOptions): Promise<ProcessResult> {
         options.gatewayUrl = adaptUrl(options.gatewayUrl);
-        const preparedOptions = this.prepareDeclareOptions(options);
+        const preparedOptions = await this.prepareDeclareOptions(options);
 
         const executed = this.execute("starknet", preparedOptions);
         return executed;
@@ -386,7 +442,7 @@ export class DockerWrapper extends StarknetWrapper {
 }
 
 export class VenvWrapper extends StarknetWrapper {
-    constructor(venvPath: string) {
+    constructor(venvPath: string, rootPath: string, artifactsPath: string) {
         let pythonPath: string;
         if (venvPath === "active") {
             console.log(`${PLUGIN_NAME} plugin using the active environment.`);
@@ -397,7 +453,7 @@ export class VenvWrapper extends StarknetWrapper {
             pythonPath = getPrefixedCommand(venvPath, "python3");
         }
 
-        super(new StarknetVenvProxy(pythonPath));
+        super(new StarknetVenvProxy(pythonPath), rootPath, artifactsPath);
     }
 
     public async compile(options: CompileWrapperOptions): Promise<ProcessResult> {
@@ -407,7 +463,7 @@ export class VenvWrapper extends StarknetWrapper {
     }
 
     public async declare(options: DeclareWrapperOptions): Promise<ProcessResult> {
-        const preparedOptions = this.prepareDeclareOptions(options);
+        const preparedOptions = await this.prepareDeclareOptions(options);
         const executed = await this.execute("starknet", preparedOptions);
         return executed;
     }

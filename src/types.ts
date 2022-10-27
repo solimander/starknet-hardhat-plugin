@@ -38,6 +38,7 @@ export type InvokeResponse = string;
 
 export type StarknetContractFactoryConfig = StarknetContractConfig & {
     metadataPath: string;
+    contractPath: string;
 };
 
 export interface StarknetContractConfig {
@@ -289,6 +290,7 @@ function defaultToPendingBlock<T extends { blockNumber?: BlockNumber }>(options:
 export interface DeclareOptions {
     token?: string;
     signature?: Array<Numeric>;
+    constants?: Record<string, string>;
 }
 
 export interface DeployOptions {
@@ -339,7 +341,8 @@ export class StarknetContractFactory {
     public abi: starknet.Abi;
     public abiPath: string;
     private constructorAbi: starknet.CairoFunction;
-    private metadataPath: string;
+    public metadataPath: string;
+    public contractPath: string;
     private networkID: string;
     private chainID: string;
     private gatewayUrl: string;
@@ -354,6 +357,7 @@ export class StarknetContractFactory {
         this.gatewayUrl = config.gatewayUrl;
         this.feederGatewayUrl = config.feederGatewayUrl;
         this.metadataPath = config.metadataPath;
+        this.contractPath = config.contractPath;
 
         // find constructor
         for (const abiEntryName in this.abi) {
@@ -372,9 +376,11 @@ export class StarknetContractFactory {
     async declare(options: DeclareOptions = {}): Promise<string> {
         const executed = await this.starknetWrapper.declare({
             contract: this.metadataPath,
+            contractPath: this.contractPath,
             gatewayUrl: this.gatewayUrl,
             token: options.token,
-            signature: handleSignature(options.signature)
+            signature: handleSignature(options.signature),
+            constants: options.constants
         });
         if (executed.statusCode) {
             const msg = `Could not declare class: ${executed.stderr.toString()}`;

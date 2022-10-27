@@ -47,7 +47,8 @@ export async function getContractFactoryUtil(hre: HardhatRuntimeEnvironment, con
         networkID: hre.config.starknet.network,
         chainID: hre.config.starknet.networkConfig.starknetChainId,
         gatewayUrl: hre.config.starknet.networkUrl,
-        feederGatewayUrl: hre.config.starknet.networkUrl
+        feederGatewayUrl: hre.config.starknet.networkUrl,
+        contractPath: `${contractPath}.cairo`
     });
 }
 
