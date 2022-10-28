@@ -1,12 +1,12 @@
 import { Image, ProcessResult } from "@nomiclabs/hardhat-docker";
-import { ABI_SUFFIX, PLUGIN_NAME } from "./constants";
+import { PLUGIN_NAME } from "./constants";
 import { StarknetDockerProxy } from "./starknet-docker-proxy";
 import { StarknetVenvProxy } from "./starknet-venv-proxy";
 import { BlockNumber, InteractChoice } from "./types";
 import { adaptUrl } from "./utils";
 import { getPrefixedCommand, normalizeVenvPath } from "./utils/venv";
 import { ExternalServer } from "./external-server";
-import path from "path";
+import { toBN } from "starknet/utils/number";
 import fs from "fs";
 
 interface CompileWrapperOptions {
@@ -20,7 +20,6 @@ interface CompileWrapperOptions {
 
 interface DeclareWrapperOptions {
     contract: string;
-    contractPath: string;
     gatewayUrl: string;
     signature?: string[];
     token?: string;
@@ -119,7 +118,7 @@ export abstract class StarknetWrapper {
 
     public async prepareDeclareOptions(options: DeclareWrapperOptions): Promise<string[]> {
         if (options.constants) {
-            await this.recompileAndWriteConstantsToOutput(options);
+            this.writeConstantsToOutput(options);
         }
         const prepared = [
             "declare",
@@ -141,39 +140,27 @@ export abstract class StarknetWrapper {
         return prepared;
     }
 
-    protected async recompileAndWriteConstantsToOutput(
-        options: DeclareWrapperOptions
-    ): Promise<void> {
-        const originalContract = fs.readFileSync(options.contractPath, "utf8");
-
-        let generatedContract = originalContract;
+    protected writeConstantsToOutput(options: DeclareWrapperOptions): void {
+        let output = fs.readFileSync(options.contract, "utf8");
         for (const [constant, replacement] of Object.entries(options.constants)) {
-            const regex = new RegExp(`const ${constant}\\s*=\\s*((0x)?[0-9a-fA-F]+)`);
-            generatedContract = generatedContract.replace(
+            const regex = new RegExp(
+                `"__main__\\.${constant}": {\n\\s*"type": "const",\n\\s*"value": (\\d*)\n\\s*},`
+            );
+            const [, valueToReplace] = output.match(regex);
+
+            output = output.replace(
                 regex,
-                `const ${constant} = ${replacement}`
+                `"__main__.${constant}": {
+                "type": "const",
+                "value": ${toBN(replacement).toString()}
+            },`
+            );
+            output = output.replace(
+                `"0x${toBN(valueToReplace).toString(16)}"`,
+                `"0x${toBN(replacement).toString(16)}"`
             );
         }
-        fs.writeFileSync(options.contractPath, generatedContract);
-
-        const rootRegex = new RegExp(`^${this.rootPath}`);
-        const suffix = options.contractPath.replace(rootRegex, "");
-        const fileName = path.basename(suffix, path.extname(suffix));
-        const dirPath = path.join(this.artifactsPath, suffix);
-        const outputPath = path.join(dirPath, `${fileName}.json`);
-        const abiPath = path.join(dirPath, `${fileName}${ABI_SUFFIX}`);
-        const executed = await this.compile({
-            cairoPath: options.contractPath,
-            file: options.contractPath,
-            output: outputPath,
-            abi: abiPath,
-            accountContract: false,
-            disableHintValidation: true
-        });
-        if (executed.statusCode) {
-            throw new Error(`Recomplication of contract at ${fileName} failed`);
-        }
-        fs.writeFileSync(options.contractPath, originalContract);
+        fs.writeFileSync(options.contract, output);
     }
 
     public abstract declare(options: DeclareWrapperOptions): Promise<ProcessResult>;
