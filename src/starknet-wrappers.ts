@@ -118,7 +118,7 @@ export abstract class StarknetWrapper {
 
     public async prepareDeclareOptions(options: DeclareWrapperOptions): Promise<string[]> {
         if (options.constants) {
-            this.writeConstantsToOutput(options);
+            options.contract = this.writeConstantsToOutput(options);
         }
         const prepared = [
             "declare",
@@ -140,7 +140,7 @@ export abstract class StarknetWrapper {
         return prepared;
     }
 
-    protected writeConstantsToOutput(options: DeclareWrapperOptions): void {
+    protected writeConstantsToOutput(options: DeclareWrapperOptions): string {
         let output = fs.readFileSync(options.contract, "utf8");
         for (const [constant, replacement] of Object.entries(options.constants)) {
             const regex = new RegExp(
@@ -160,7 +160,10 @@ export abstract class StarknetWrapper {
                 `"0x${toBN(replacement).toString(16)}"`
             );
         }
-        fs.writeFileSync(options.contract, output);
+        const generatedOutputPath = options.contract.replace(".json", "_generated.json");
+        fs.writeFileSync(generatedOutputPath, output);
+
+        return generatedOutputPath;
     }
 
     public abstract declare(options: DeclareWrapperOptions): Promise<ProcessResult>;
