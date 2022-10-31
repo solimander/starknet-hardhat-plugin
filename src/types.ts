@@ -295,6 +295,7 @@ export interface DeclareOptions {
     sender?: string; // address
     nonce?: Numeric;
     maxFee?: Numeric;
+    constants?: Record<string, string>;
 }
 
 export interface DeployOptions {
@@ -385,7 +386,8 @@ export class StarknetContractFactory {
             maxFee: (options.maxFee || 0).toString(),
             token: options.token,
             signature: handleSignature(options.signature),
-            sender: options.sender
+            sender: options.sender,
+            constants: options.constants
         });
         if (executed.statusCode) {
             const msg = `Could not declare class: ${executed.stderr.toString()}`;

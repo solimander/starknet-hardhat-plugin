@@ -29,6 +29,7 @@ import {
 } from "./account-utils";
 import { copyWithBigint, warn } from "./utils";
 import { Call, hash, RawCalldata } from "starknet";
+import fs from "fs";
 
 type ExecuteCallParameters = {
     to: bigint;
@@ -303,6 +304,13 @@ export abstract class Account {
     ): Promise<string> {
         const nonce = options.nonce == null ? await this.getNonce() : options.nonce;
         const maxFee = (options.maxFee || 0).toString();
+
+        if (options.constants) {
+            contractFactory.metadataPath = this.hre.starknetWrapper.writeConstantsToOutput(
+                contractFactory.metadataPath,
+                options.constants
+            );
+        }
 
         const classHash = await this.hre.starknetWrapper.getClassHash(contractFactory.metadataPath);
         const chainId = this.hre.config.starknet.networkConfig.starknetChainId;

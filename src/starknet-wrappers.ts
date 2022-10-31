@@ -7,6 +7,8 @@ import { adaptUrl } from "./utils";
 import { getPrefixedCommand, normalizeVenvPath } from "./utils/venv";
 import { ExternalServer } from "./external-server";
 import { StarknetPluginError } from "./starknet-plugin-error";
+import { toBN } from "starknet/utils/number";
+import fs from "fs";
 
 interface CompileWrapperOptions {
     file: string;
@@ -25,6 +27,7 @@ interface DeclareWrapperOptions {
     signature?: string[];
     token?: string;
     sender?: string;
+    constants?: Record<string, string>;
 }
 
 interface DeployWrapperOptions {
@@ -136,6 +139,9 @@ export abstract class StarknetWrapper {
     public abstract compile(options: CompileWrapperOptions): Promise<ProcessResult>;
 
     public prepareDeclareOptions(options: DeclareWrapperOptions): string[] {
+        if (options.constants) {
+            options.contract = this.writeConstantsToOutput(options.contract, options.constants);
+        }
         const prepared = [
             "declare",
             "--contract",
@@ -165,6 +171,32 @@ export abstract class StarknetWrapper {
         prepared.push("--max_fee", options.maxFee);
 
         return prepared;
+    }
+
+    public writeConstantsToOutput(metadataPath: string, constants: Record<string, string>): string {
+        let output = fs.readFileSync(metadataPath, "utf8");
+        for (const [constant, replacement] of Object.entries(constants)) {
+            const regex = new RegExp(
+                `"__main__\\.${constant}": {\n\\s*"type": "const",\n\\s*"value": (\\d*)\n\\s*},`
+            );
+            const [, valueToReplace] = output.match(regex);
+
+            output = output.replace(
+                regex,
+                `"__main__.${constant}": {
+                "type": "const",
+                "value": ${toBN(replacement).toString()}
+            },`
+            );
+            output = output.replace(
+                `"0x${toBN(valueToReplace).toString(16)}"`,
+                `"0x${toBN(replacement).toString(16)}"`
+            );
+        }
+        const generatedOutputPath = metadataPath.replace(".json", "_generated.json");
+        fs.writeFileSync(generatedOutputPath, output);
+
+        return generatedOutputPath;
     }
 
     public abstract declare(options: DeclareWrapperOptions): Promise<ProcessResult>;
