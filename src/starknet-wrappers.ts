@@ -189,7 +189,7 @@ export abstract class StarknetWrapper {
             },`
             );
             output = output.replace(
-                `"0x${toBN(valueToReplace).toString(16)}"`,
+                new RegExp(`"0x${toBN(valueToReplace).toString(16)}"`, "g"),
                 `"0x${toBN(replacement).toString(16)}"`
             );
         }
