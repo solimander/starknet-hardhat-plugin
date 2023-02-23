@@ -4,7 +4,8 @@ import {
     HttpNetworkConfig,
     NetworkConfig,
     NetworksConfig,
-    ProjectPathsConfig
+    ProjectPathsConfig,
+    VmLang
 } from "hardhat/types";
 import { StarknetPluginError } from "./starknet-plugin-error";
 import {
@@ -12,16 +13,26 @@ import {
     ALPHA_MAINNET_INTERNALLY,
     ALPHA_TESTNET,
     ALPHA_TESTNET_INTERNALLY,
+    ALPHA_TESTNET_2,
+    ALPHA_TESTNET_2_INTERNALLY,
     DEFAULT_STARKNET_ACCOUNT_PATH,
     INTEGRATED_DEVNET,
-    INTEGRATED_DEVNET_INTERNALLY
+    INTEGRATED_DEVNET_INTERNALLY,
+    UDC_ADDRESS,
+    StarknetChainId,
+    DEFAULT_DEVNET_CAIRO_VM
 } from "./constants";
 import * as path from "path";
 import * as fs from "fs";
 import { glob } from "glob";
 import { promisify } from "util";
-import { StringMap } from "./types";
-import { StarknetChainId } from "starknet/constants";
+import { Numeric, StarknetContract } from "./types";
+import { stark } from "starknet";
+import { handleInternalContractArtifacts } from "./account-utils";
+import { getContractFactoryUtil } from "./extend-utils";
+import { compressProgram } from "starknet/utils/stark";
+import { CompiledContract } from "starknet";
+import JsonBigint from "json-bigint";
 
 const globPromise = promisify(glob);
 /**
@@ -35,6 +46,8 @@ export function adaptLog(msg: string): string {
         .replace("--network", "--starknet-network")
         .replace("gateway_url", "gateway-url")
         .replace("--account_contract", "--account-contract")
+        .replace("the 'starknet deploy_account' command", "'hardhat starknet-deploy-account'")
+        .replace("the 'new_account' command", "'hardhat starknet-new-account'")
         .split(".\nTraceback (most recent call last)")[0] // remove duplicated log
         .replace(/\\n/g, "\n"); // use newlines from json response for formatting
 }
@@ -123,6 +136,23 @@ export function getArtifactPath(sourcePath: string, paths: ProjectPathsConfig): 
     return path.join(paths.starknetArtifacts, suffix);
 }
 
+/**
+ * Adapts path relative to the root of the project and
+ * tilde will be resolved to homedir
+ * @param root string representing the root path set on hre or config
+ * @param newPath string representing the path provided by the user
+ * @returns adapted path
+ */
+export function adaptPath(root: string, newPath: string): string {
+    let adaptedPath = newPath;
+    if (newPath[0] === "~") {
+        adaptedPath = path.normalize(path.join(process.env.HOME, newPath.slice(1)));
+    } else if (!path.isAbsolute(newPath)) {
+        adaptedPath = path.normalize(path.join(root, newPath));
+    }
+    return adaptedPath;
+}
+
 export function checkArtifactExists(artifactsPath: string): void {
     if (!fs.existsSync(artifactsPath)) {
         const msg = `Artifact expected to be at ${artifactsPath}, but not found. Consider recompiling your contracts.`;
@@ -146,6 +176,8 @@ export function getNetwork<N extends NetworkConfig>(
         networkName = ALPHA_MAINNET_INTERNALLY;
     } else if (isTestnet(networkName)) {
         networkName = ALPHA_TESTNET_INTERNALLY;
+    } else if (isTestnetTwo(networkName)) {
+        networkName = ALPHA_TESTNET_2_INTERNALLY;
     } else if (isStarknetDevnet(networkName)) {
         networkName = INTEGRATED_DEVNET_INTERNALLY;
     }
@@ -162,11 +194,17 @@ export function getNetwork<N extends NetworkConfig>(
         throw new StarknetPluginError(`Cannot use network ${networkName}. No "url" specified.`);
     }
     network.starknetChainId ||= StarknetChainId.TESTNET;
+    network.vmLang ||= DEFAULT_DEVNET_CAIRO_VM as VmLang;
+
     return network;
 }
 
 function isTestnet(networkName: string): boolean {
     return networkName === ALPHA_TESTNET || networkName === ALPHA_TESTNET_INTERNALLY;
+}
+
+function isTestnetTwo(networkName: string): boolean {
+    return networkName === ALPHA_TESTNET_2 || networkName === ALPHA_TESTNET_2_INTERNALLY;
 }
 
 function isMainnet(networkName: string): boolean {
@@ -216,22 +254,6 @@ export function getAccountPath(accountPath: string, hre: HardhatRuntimeEnvironme
     return accountDir;
 }
 
-export function flattenStringMap(stringMap: StringMap): string[] {
-    let result: string[] = [];
-    Object.keys(stringMap).forEach((key) => {
-        const value = stringMap[key];
-
-        if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-            result = result.concat(flattenStringMap(value));
-        } else if (Array.isArray(value)) {
-            result = result.concat(value);
-        } else {
-            result.push(value);
-        }
-    });
-    return result;
-}
-
 export function copyWithBigint<T>(object: unknown): T {
     return JSON.parse(
         JSON.stringify(object, (_key, value) =>
@@ -249,10 +271,83 @@ export function getImageTagByArch(tag: string): string {
     return tag;
 }
 
+export function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Log a yellow message to STDERR.
  * @param message
  */
 export function warn(message: string): void {
     console.warn("\x1b[33m%s\x1b[0m", message);
+}
+
+/**
+ * Converts BigInt to 0x-prefixed hex string
+ * @param numeric
+ */
+export function numericToHexString(numeric: Numeric): string {
+    return "0x" + BigInt(numeric).toString(16);
+}
+
+/**
+ * @returns random salt
+ */
+export function generateRandomSalt(): string {
+    return stark.randomAddress();
+}
+
+/**
+ * Global handler of UDC
+ */
+export class UDC {
+    private static instance: StarknetContract;
+
+    /**
+     * Returns the UDC singleton.
+     */
+    static async getInstance() {
+        if (!UDC.instance) {
+            const hre = await import("hardhat");
+            const contractPath = handleInternalContractArtifacts(
+                "OpenZeppelinUDC", // dir name
+                "UDC", // file name
+                "0.5.0", // version
+                hre
+            );
+            const udcContractFactory = await getContractFactoryUtil(hre, contractPath);
+            UDC.instance = udcContractFactory.getContractAt(UDC_ADDRESS);
+        }
+        return UDC.instance;
+    }
+}
+
+export function readContract(contractPath: string) {
+    const { parse } = handleJsonWithBigInt(false);
+    const parsedContract = parse(
+        fs.readFileSync(contractPath).toString("ascii")
+    ) as CompiledContract;
+    return {
+        ...parsedContract,
+        program: compressProgram(parsedContract.program)
+    };
+}
+
+export function handleJsonWithBigInt(alwaysParseAsBig: boolean) {
+    return JsonBigint({
+        alwaysParseAsBig,
+        useNativeBigInt: true,
+        protoAction: "preserve",
+        constructorAction: "preserve"
+    });
+}
+
+export function bnToDecimalStringArray(rawCalldata: bigint[]) {
+    return rawCalldata.map((x) => x.toString(10));
+}
+
+export function estimatedFeeToMaxFee(amount?: bigint, overhead = 0.5) {
+    overhead = Math.round((1 + overhead) * 100);
+    return (amount * BigInt(overhead)) / BigInt(100);
 }

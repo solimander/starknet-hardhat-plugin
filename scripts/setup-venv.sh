@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -eu
 
 VENV=../my-venv
 
@@ -13,11 +13,7 @@ echo "python version: $(python --version)"
 if [[ "$OSTYPE" == "darwin"* ]]; then
     export HOMEBREW_NO_INSTALL_CLEANUP=1
     brew ls --versions gmp || brew install gmp
-fi
-
-if [ -z "$TEST_SUBDIR" ]; then
-    echo "Missing TEST_SUBDIR env var"
-    exit 1
+    CFLAGS=-I`brew --prefix gmp`/include LDFLAGS=-L`brew --prefix gmp`/lib pip3 install fastecdsa
 fi
 
 if [ "$TEST_SUBDIR" == "venv-tests" ]; then
@@ -25,4 +21,3 @@ if [ "$TEST_SUBDIR" == "venv-tests" ]; then
     echo "starknet at: $(which starknet)"
     echo "starknet version: $(starknet --version)"
 fi
-

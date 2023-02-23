@@ -9,7 +9,9 @@
         "resolveJsonModule": true,
         "strictNullChecks": false,
         "declaration": true,
-        "module": "commonjs"
+        "module": "commonjs",
+        "noImplicitOverride": true,
+        "typeRoots": ["./node_modules/@types"]
     },
-    "include": ["./src", "config.json", "account-contract-artifacts/**/*.json"]
+    "include": ["./src", "config.json", "contract-artifacts/**/*.json"]
 }

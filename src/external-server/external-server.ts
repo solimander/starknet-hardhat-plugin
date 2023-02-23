@@ -4,6 +4,7 @@ import { ChildProcess } from "child_process";
 import { StarknetPluginError } from "../starknet-plugin-error";
 import { IntegratedDevnetLogger } from "./integrated-devnet-logger";
 import { StringMap } from "../types";
+import { HardhatRuntimeEnvironment } from "hardhat/types";
 
 function sleep(amountMillis: number): Promise<void> {
     return new Promise((resolve) => {
@@ -160,12 +161,17 @@ export abstract class ExternalServer {
     public async post<T>(data: StringMap): Promise<T> {
         await this.ensureStarted();
 
+        const hre: HardhatRuntimeEnvironment = await import("hardhat");
+
         try {
-            const response = await axios.post<T>(this.url, data);
+            const response = await axios.post<T>(this.url, data, {
+                timeout: hre.config.starknet.requestTimeout,
+                timeoutErrorMessage: "Request timed out"
+            });
             return response.data;
         } catch (error) {
             const parent = error instanceof Error && error;
-            const msg = "Error in interaction with Starknet CLI proxy server";
+            const msg = `Error in interaction with Starknet CLI proxy server\n${error}`;
             throw new StarknetPluginError(msg, parent);
         }
     }

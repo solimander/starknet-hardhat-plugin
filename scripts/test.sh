@@ -1,7 +1,7 @@
 #!/bin/bash
-set -e
+set -eu
 
-trap 'for killable in $(jobs -p); do kill $killable; done' EXIT
+trap 'for killable in $(jobs -p); do kill -9 $killable; done' EXIT
 
 CONFIG_FILE_NAME="hardhat.config.ts"
 
@@ -9,7 +9,13 @@ CONFIG_FILE_NAME="hardhat.config.ts"
 
 # setup example repo
 rm -rf starknet-hardhat-example
-git clone -b plugin --single-branch git@github.com:Shard-Labs/starknet-hardhat-example.git
+EXAMPLE_REPO_BRANCH="plugin"
+if [[ "$CIRCLE_BRANCH" == "master" ]] && [[ "$EXAMPLE_REPO_BRANCH" != "plugin" ]]; then
+    echo "Invalid example repo branch: $EXAMPLE_REPO_BRANCH"
+    exit 1
+fi
+
+git clone -b "$EXAMPLE_REPO_BRANCH" --single-branch git@github.com:Shard-Labs/starknet-hardhat-example.git
 cd starknet-hardhat-example
 git log -n 1
 npm ci
@@ -31,7 +37,7 @@ success=0
 test_dir="../test/$TEST_SUBDIR"
 
 if [ ! -d "$test_dir" ]; then
-    echo "Invalid test directory"
+    echo "Invalid test directory: $test_dir"
     exit -1
 fi
 
@@ -67,14 +73,21 @@ function iterate_dir() {
         # replace the dummy config (CONFIG_FILE_NAME) with the one used by this test
         /bin/cp "$config_file_path" "$CONFIG_FILE_NAME"
 
-        [ "$network" == "devnet" ] && DEVNET_PID=$(../scripts/run-devnet.sh)
+        [ "$network" == "devnet" ] && ../scripts/run-devnet.sh
 
-        NETWORK="$network" "$test_case/check.sh" && success=$((success + 1)) || echo "Test failed!"
+        # check if test_case/check.ts exists
+        if [ -f "$test_case/check.ts" ]; then
+            # run the test
+            NETWORK="$network" npx ts-node "$test_case/check.ts" && success=$((success + 1)) || echo "Test failed!"
+        else
+            echo "Error: $test_case/check.ts not found"
+        fi
 
         rm -rf starknet-artifacts
         git checkout --force
         git clean -fd
-        [ "$network" == "devnet" ] && kill "$DEVNET_PID"
+        # specifying signal for pkill fails on mac
+        [ "$network" == "devnet" ] && pkill -f starknet-devnet && sleep 5
 
         echo "----------------------------------------------"
         echo
@@ -83,7 +96,11 @@ function iterate_dir() {
 }
 
 # perform tests on Alpha-goerli testnet only on master branch and in a linux environment
-if [[ "$CIRCLE_BRANCH" == "master" ]] && [[ "$OSTYPE" == "linux-gnu"* ]]; then
+# skip testing on testnet if [skip testnet] included in commit message
+latest_commit_msg=$(git log -1 --pretty=%B)
+if [[ "$CIRCLE_BRANCH" == "master" ]] &&
+    [[ "$OSTYPE" == "linux-gnu"* ]] &&
+    [[ "$latest_commit_msg" != *"[skip testnet]"* ]]; then
     source ../scripts/set-alpha-vars.sh
     iterate_dir alpha
 fi
