@@ -292,6 +292,7 @@ export interface DeployOptions {
     salt?: string;
     unique?: boolean;
     maxFee?: Numeric;
+    nonce?: Numeric;
 }
 
 export interface DeployAccountOptions {
