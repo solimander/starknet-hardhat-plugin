@@ -374,7 +374,8 @@ export class StarknetContractFactory {
             token: options.token,
             signature: handleSignature(options.signature),
             sender: options.sender,
-            constants: options.constants
+            constants: options.constants,
+            nonce: options.nonce?.toString()
         });
         if (executed.statusCode) {
             const msg = `Could not declare class: ${executed.stderr.toString()}`;

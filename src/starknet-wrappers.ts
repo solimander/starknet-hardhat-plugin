@@ -29,6 +29,7 @@ interface DeclareWrapperOptions {
     signature?: string[];
     token?: string;
     sender?: string;
+    nonce?: string;
     constants?: Record<string, string>;
 }
 
@@ -166,6 +167,10 @@ export abstract class StarknetWrapper {
             throw new StarknetPluginError("No maxFee provided for declare tx");
         }
         prepared.push("--max_fee", options.maxFee);
+
+        if (options.nonce) {
+            prepared.push("--nonce", options.nonce);
+        }
 
         return prepared;
     }
