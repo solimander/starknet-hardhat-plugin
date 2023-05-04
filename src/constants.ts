@@ -2,6 +2,14 @@ import config from "../config.json";
 
 export const PLUGIN_NAME = "Starknet";
 export const ABI_SUFFIX = "_abi.json";
+
+// Cairo 1 compilation
+export const CAIRO1_ASSEMBLY_SUFFIX = ".casm";
+export const CAIRO1_SIERRA_SUFFIX = ".json";
+export const CAIRO1_COMPILE_BIN = "starknet-compile";
+export const CAIRO1_SIERRA_COMPILE_BIN = "starknet-sierra-compile";
+export const DOCKER_HOST_BIN_PATH = "/usr/local/bin/target/release";
+
 export const DEFAULT_STARKNET_SOURCES_PATH = "contracts";
 export const DEFAULT_STARKNET_ARTIFACTS_PATH = "starknet-artifacts";
 export const DEFAULT_STARKNET_ACCOUNT_PATH = "~/.starknet_accounts";
@@ -41,7 +49,7 @@ export const VOYAGER_MAINNET_VERIFIED_URL = "https://voyager.online/contract/";
 export const CHECK_STATUS_TIMEOUT = 5000; // ms
 export const CHECK_STATUS_RECOVER_TIMEOUT = 10000; // ms
 
-export const LEN_SUFFIX = "_len";
+export const LEN_SUFFIX_DEPRECATED = "_len";
 
 export const SHORT_STRING_MAX_CHARACTERS = 31;
 
@@ -61,6 +69,7 @@ export enum StarknetChainId {
 export const PREFIX_TRANSACTION = "Starknet Transaction";
 
 export const TRANSACTION_VERSION = BigInt(1);
+export const DECLARE_VERSION = BigInt(2);
 export const QUERY_VERSION = BigInt(2) ** BigInt(128) + TRANSACTION_VERSION;
 
 export const HEXADECIMAL_REGEX = /^0x[0-9a-fA-F]+?$/;
@@ -69,3 +78,5 @@ export const UDC_ADDRESS = "0x41A78E741E5AF2FEC34B695679BC6891742439F7AFB8484ECD
 export const UDC_DEPLOY_FUNCTION_NAME = "deployContract";
 
 export const ETH_ADDRESS = "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7";
+
+export const DOCKER_HOST = "host.docker.internal";

@@ -1,3 +1,28 @@
+import { ec } from "elliptic";
+import { ec as ellipticCurve, hash, number, Call, RawCalldata } from "starknet";
+
+import {
+    calculateDeclareV2TxHash,
+    calculateDeployAccountHash,
+    CallParameters,
+    generateKeys,
+    handleInternalContractArtifacts,
+    sendDeclareV2Tx,
+    sendDeployAccountTx,
+    sendEstimateFeeTx,
+    signMultiCall
+} from "./account-utils";
+import {
+    DECLARE_VERSION,
+    QUERY_VERSION,
+    StarknetChainId,
+    TransactionHashPrefix,
+    TRANSACTION_VERSION,
+    UDC_DEPLOY_FUNCTION_NAME
+} from "./constants";
+import { getTransactionReceiptUtil } from "./extend-utils";
+import { StarknetPluginError } from "./starknet-plugin-error";
+import * as starknet from "./starknet-types";
 import {
     ContractInteractionFunction,
     DeclareOptions,
@@ -13,27 +38,6 @@ import {
     StarknetContractFactory,
     StringMap
 } from "./types";
-import * as starknet from "./starknet-types";
-import {
-    QUERY_VERSION,
-    StarknetChainId,
-    TransactionHashPrefix,
-    TRANSACTION_VERSION,
-    UDC_DEPLOY_FUNCTION_NAME
-} from "./constants";
-import { StarknetPluginError } from "./starknet-plugin-error";
-import * as ellipticCurve from "starknet/utils/ellipticCurve";
-import { BigNumberish, toBN } from "starknet/utils/number";
-import { ec } from "elliptic";
-import {
-    calculateDeployAccountHash,
-    CallParameters,
-    generateKeys,
-    handleInternalContractArtifacts,
-    sendDeployAccountTx,
-    sendEstimateFeeTx,
-    signMultiCall
-} from "./account-utils";
 import {
     numericToHexString,
     copyWithBigint,
@@ -41,15 +45,13 @@ import {
     UDC,
     readContract,
     bnToDecimalStringArray,
-    estimatedFeeToMaxFee
+    estimatedFeeToMaxFee,
+    readCairo1Contract
 } from "./utils";
-import { Call, hash, RawCalldata } from "starknet";
-import { getTransactionReceiptUtil } from "./extend-utils";
-import fs from "fs";
 
 type ExecuteCallParameters = {
     to: bigint;
-    selector: BigNumberish;
+    selector: number.BigNumberish;
     data_offset: number;
     data_len: number;
 };
@@ -288,7 +290,8 @@ export abstract class Account {
             nonce,
             options.maxFee,
             choice.transactionVersion,
-            hre.starknet.networkConfig.starknetChainId
+            hre.starknet.networkConfig.starknetChainId,
+            options.rawInput
         );
 
         if (options.signature) {
@@ -296,8 +299,11 @@ export abstract class Account {
                 "Custom signature cannot be specified when using Account (it is calculated automatically)";
             throw new StarknetPluginError(msg);
         }
-        const signatures = this.getSignatures(messageHash);
-        const contractInteractOptions = { signature: signatures, ...options };
+        const contractInteractOptions = {
+            signature: this.getSignatures(messageHash),
+            ...options,
+            rawInput: false // rawInput shouldn't affect validating args of __execute__
+        };
 
         const contractInteractor = (<ContractInteractionFunction>(
             this.starknetContract[choice.internalCommand]
@@ -314,6 +320,8 @@ export abstract class Account {
      * @param nonce current nonce
      * @param maxFee the maximum fee amount set for the contract interaction
      * @param version the transaction version
+     * @param chainId the ID of the chain
+     * @param rawInput if `true`, interprets calldata as already adapted into an array
      * @returns the message hash for the multicall and the arguments to execute it with
      */
     private handleMultiInteract(
@@ -322,16 +330,20 @@ export abstract class Account {
         nonce: Numeric,
         maxFee: Numeric,
         version: Numeric,
-        chainId: StarknetChainId
+        chainId: StarknetChainId,
+        rawInput: boolean
     ) {
         const callArray: Call[] = callParameters.map((callParameters) => {
+            const calldata = rawInput
+                ? <string[]>callParameters.calldata
+                : callParameters.toContract.adaptInput(
+                      callParameters.functionName,
+                      callParameters.calldata
+                  );
             return {
                 contractAddress: callParameters.toContract.address,
                 entrypoint: callParameters.functionName,
-                calldata: callParameters.toContract.adaptInput(
-                    callParameters.functionName,
-                    callParameters.calldata
-                )
+                calldata
             };
         });
 
@@ -398,12 +410,16 @@ export abstract class Account {
      * Declare the contract class corresponding to the `contractFactory`
      * @param contractFactory
      * @param options
-     * @returns the hash of the declared class
+     * @returns transaction hash
      */
     public async declare(
         contractFactory: StarknetContractFactory,
         options: DeclareOptions = {}
     ): Promise<string> {
+        if (contractFactory.isCairo1()) {
+            return await this.declareV2(contractFactory, options);
+        }
+
         let maxFee = options?.maxFee;
         if (maxFee && options?.overhead) {
             const msg = "maxFee and overhead cannot be specified together";
@@ -449,6 +465,51 @@ export abstract class Account {
             sender: this.address,
             maxFee: BigInt(maxFee)
         });
+    }
+
+    private async declareV2(
+        contractFactory: StarknetContractFactory,
+        options: DeclareOptions = {}
+    ): Promise<string> {
+        const maxFee = options?.maxFee;
+        if (!maxFee) {
+            const msg =
+                "maxFee must be provided to send declare transactions.\n" +
+                "A value of '0' for 'maxFee' is not supported.";
+            throw new StarknetPluginError(msg);
+        }
+
+        const version = DECLARE_VERSION;
+        const nonce = options.nonce == null ? await this.getNonce() : options.nonce;
+        const hre = await import("hardhat");
+        const chainId = hre.starknet.networkConfig.starknetChainId;
+
+        const compiledClassHash = await hre.starknetWrapper.getCompiledClassHash(
+            contractFactory.casmPath
+        );
+        const classHash = await hre.starknetWrapper.getSierraContractClassHash(
+            contractFactory.metadataPath
+        );
+
+        const calldata = [classHash];
+        const messageHash = calculateDeclareV2TxHash(
+            this.address,
+            calldata,
+            maxFee.toString(),
+            chainId,
+            [nonce.toString(), compiledClassHash]
+        );
+
+        const signatures = this.getSignatures(messageHash);
+        return sendDeclareV2Tx(
+            bnToDecimalStringArray(signatures),
+            compiledClassHash,
+            maxFee,
+            this.address,
+            version,
+            nonce,
+            readCairo1Contract(contractFactory.metadataPath)
+        );
     }
 }
 
@@ -515,7 +576,7 @@ export class OpenZeppelinAccount extends Account {
         version: string,
         chainId: StarknetChainId
     ): string {
-        const hashable: Array<BigNumberish> = [callArray.length];
+        const hashable: Array<number.BigNumberish> = [callArray.length];
         const rawCalldata: RawCalldata = [];
         callArray.forEach((call) => {
             hashable.push(
@@ -635,7 +696,7 @@ export class OpenZeppelinAccount extends Account {
         const contract = contractFactory.getContractAt(address);
 
         const { publicKey: expectedPubKey } = await contract.call("getPublicKey");
-        const keyPair = ellipticCurve.getKeyPair(toBN(privateKey.substring(2), "hex"));
+        const keyPair = ellipticCurve.getKeyPair(number.toBN(privateKey.substring(2), "hex"));
         const publicKey = ellipticCurve.getStarkKey(keyPair);
 
         if (BigInt(publicKey) !== expectedPubKey) {
@@ -766,7 +827,7 @@ export class ArgentAccount extends Account {
         version: string,
         chainId: StarknetChainId
     ): string {
-        const hashable: Array<BigNumberish> = [callArray.length];
+        const hashable: Array<number.BigNumberish> = [callArray.length];
         const rawCalldata: RawCalldata = [];
         callArray.forEach((call) => {
             hashable.push(
@@ -917,7 +978,7 @@ export class ArgentAccount extends Account {
             guardianPublicKey = undefined;
         } else {
             guardianKeyPair = ellipticCurve.getKeyPair(
-                toBN(newGuardianPrivateKey.substring(2), "hex")
+                number.toBN(newGuardianPrivateKey.substring(2), "hex")
             );
             guardianPublicKey = ellipticCurve.getStarkKey(guardianKeyPair);
         }
@@ -960,7 +1021,7 @@ export class ArgentAccount extends Account {
         contract.setImplementation(implementationFactory);
 
         const { signer: expectedPubKey } = await contract.call("getSigner");
-        const keyPair = ellipticCurve.getKeyPair(toBN(privateKey.substring(2), "hex"));
+        const keyPair = ellipticCurve.getKeyPair(number.toBN(privateKey.substring(2), "hex"));
         const publicKey = ellipticCurve.getStarkKey(keyPair);
 
         if (expectedPubKey === BigInt(0)) {

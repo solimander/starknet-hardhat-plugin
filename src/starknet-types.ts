@@ -16,7 +16,7 @@ export interface Struct {
 }
 
 export interface Argument {
-    name: string;
+    name?: string;
     type: string;
 }
 
@@ -85,7 +85,7 @@ export interface L2ToL1Message {
 
 export interface TransactionData {
     calldata: string[];
-    contract_address: string;
+    sender_address: string;
     entry_point_selector: string;
     entry_point_type: string;
     max_fee: string;
@@ -161,4 +161,9 @@ export type FeeEstimation = {
     unit: string;
     gas_price: bigint;
     gas_usage: bigint;
+};
+
+export type StarkError = {
+    code: string;
+    message: string;
 };

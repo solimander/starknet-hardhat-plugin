@@ -13,6 +13,10 @@ export function exec(cmd: string, expectFailure = false) {
     return result;
 }
 
+export const hardhatStarknetCompileDeprecated = (args: Array<string>, expectFailure = false) => {
+    return exec(`npx hardhat starknet-compile-deprecated ${args.join(" ")}`, expectFailure);
+};
+
 export const hardhatStarknetCompile = (args: Array<string>, expectFailure = false) => {
     return exec(`npx hardhat starknet-compile ${args.join(" ")}`, expectFailure);
 };

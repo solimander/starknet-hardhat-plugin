@@ -1,17 +1,25 @@
 import { Image, ProcessResult } from "@nomiclabs/hardhat-docker";
-import { PLUGIN_NAME, StarknetChainId } from "./constants";
+import axios from "axios";
+import { HardhatRuntimeEnvironment } from "hardhat/types";
+import path from "path";
+import { hash, number } from "starknet";
+
+import { DockerCairo1Compiler, exec } from "./cairo1-compiler";
+import {
+    CAIRO1_COMPILE_BIN,
+    CAIRO1_SIERRA_COMPILE_BIN,
+    DOCKER_HOST_BIN_PATH,
+    DOCKER_HOST,
+    PLUGIN_NAME,
+    StarknetChainId
+} from "./constants";
+import { ExternalServer } from "./external-server";
 import { StarknetDockerProxy } from "./starknet-docker-proxy";
+import { StarknetPluginError } from "./starknet-plugin-error";
+import { FeeEstimation } from "./starknet-types";
 import { StarknetVenvProxy } from "./starknet-venv-proxy";
 import { BlockNumber, InteractChoice } from "./types";
-import { adaptUrl } from "./utils";
 import { getPrefixedCommand, normalizeVenvPath } from "./utils/venv";
-import { ExternalServer } from "./external-server";
-import { StarknetPluginError } from "./starknet-plugin-error";
-import { HardhatRuntimeEnvironment } from "hardhat/types";
-import { FeeEstimation } from "./starknet-types";
-import { hash } from "starknet";
-import { toBN, toHex } from "starknet/utils/number";
-import axios from "axios";
 import fs from "fs";
 
 interface CompileWrapperOptions {
@@ -21,6 +29,24 @@ interface CompileWrapperOptions {
     cairoPath: string;
     accountContract: boolean;
     disableHintValidation: boolean;
+}
+
+interface CairoToSierraOptions {
+    path: string;
+    output: string;
+    binDirPath?: string;
+    replaceIds?: boolean;
+    allowedLibfuncsListName?: string;
+    allowedLibfuncsListFile?: string;
+}
+
+interface SierraToCasmOptions {
+    file: string;
+    output: string;
+    binDirPath?: string;
+    allowedLibfuncsListName?: string;
+    allowedLibfuncsListFile?: string;
+    addPythonicHints?: boolean;
 }
 
 interface DeclareWrapperOptions {
@@ -38,7 +64,7 @@ interface InteractWrapperOptions {
     nonce: string;
     choice: InteractChoice;
     address: string;
-    abi: string;
+    abi?: string;
     functionName: string;
     inputs?: string[];
     signature?: string[];
@@ -83,12 +109,32 @@ interface MigrateContractWrapperOptions {
 }
 
 export abstract class StarknetWrapper {
-    constructor(private externalServer: ExternalServer, protected hre: HardhatRuntimeEnvironment) {
+    constructor(
+        protected externalServer: ExternalServer,
+        protected hre: HardhatRuntimeEnvironment
+    ) {
         // this is dangerous since hre get set here, before being fully initialized (e.g. active network not yet set)
         // it's dangerous because in getters (e.g. get gatewayUrl) we rely on it being initialized
     }
 
-    protected abstract get gatewayUrl(): string;
+    protected get gatewayUrl(): string {
+        const url = this.hre.starknet.networkConfig.url;
+        if (this.externalServer.isDockerDesktop) {
+            for (const protocol of ["http://", "https://", ""]) {
+                for (const host of ["localhost", "127.0.0.1"]) {
+                    if (url === `${protocol}${host}`) {
+                        return `${protocol}${DOCKER_HOST}`;
+                    }
+
+                    const prefix = `${protocol}${host}:`;
+                    if (url.startsWith(prefix)) {
+                        return url.replace(prefix, `${protocol}${DOCKER_HOST}:`);
+                    }
+                }
+            }
+        }
+        return url;
+    }
 
     private get chainID(): StarknetChainId {
         return this.hre.starknet.networkConfig.starknetChainId;
@@ -99,7 +145,14 @@ export abstract class StarknetWrapper {
     }
 
     public async execute(
-        command: "starknet" | "starknet-compile" | "get_class_hash" | "cairo-migrate",
+        command:
+            | "starknet"
+            | "starknet-compile-deprecated"
+            | "get_class_hash"
+            | "cairo-migrate"
+            | "get_contract_class"
+            | "get_contract_class_hash"
+            | "get_compiled_class_hash",
         args: string[]
     ): Promise<ProcessResult> {
         return await this.externalServer.post<ProcessResult>({
@@ -108,7 +161,7 @@ export abstract class StarknetWrapper {
         });
     }
 
-    protected prepareCompileOptions(options: CompileWrapperOptions): string[] {
+    protected prepareDeprecatedCompileOptions(options: CompileWrapperOptions): string[] {
         const ret = [
             options.file,
             "--abi",
@@ -130,11 +183,15 @@ export abstract class StarknetWrapper {
         return ret;
     }
 
-    public async compile(options: CompileWrapperOptions): Promise<ProcessResult> {
-        const preparedOptions = this.prepareCompileOptions(options);
-        const executed = await this.execute("starknet-compile", preparedOptions);
+    public async deprecatedCompile(options: CompileWrapperOptions): Promise<ProcessResult> {
+        const preparedOptions = this.prepareDeprecatedCompileOptions(options);
+        const executed = await this.execute("starknet-compile-deprecated", preparedOptions);
         return executed;
     }
+
+    public abstract compileCairoToSierra(options: CairoToSierraOptions): Promise<ProcessResult>;
+
+    public abstract compileSierraToCasm(options: SierraToCasmOptions): Promise<ProcessResult>;
 
     public prepareDeclareOptions(options: DeclareWrapperOptions): string[] {
         if (options.constants) {
@@ -142,6 +199,7 @@ export abstract class StarknetWrapper {
         }
         const prepared = [
             "declare",
+            "--deprecated",
             "--contract",
             options.contract,
             "--gateway_url",
@@ -166,6 +224,8 @@ export abstract class StarknetWrapper {
         if (options.maxFee == null) {
             throw new StarknetPluginError("No maxFee provided for declare tx");
         }
+
+        prepared.push("--chain_id", this.chainID);
         prepared.push("--max_fee", options.maxFee);
 
         if (options.nonce) {
@@ -187,12 +247,12 @@ export abstract class StarknetWrapper {
                 regex,
                 `"__main__.${constant}": {
                 "type": "const",
-                "value": ${toBN(replacement).toString()}
+                "value": ${number.toBN(replacement).toString()}
             },`
             );
             output = output.replace(
-                new RegExp(`"0x${toBN(valueToReplace).toString(16)}"`, "g"),
-                `"0x${toBN(replacement).toString(16)}"`
+                new RegExp(`"0x${number.toBN(valueToReplace).toString(16)}"`, "g"),
+                `"0x${number.toBN(replacement).toString(16)}"`
             );
         }
         const generatedOutputPath = metadataPath.replace(".json", "_generated.json");
@@ -207,11 +267,68 @@ export abstract class StarknetWrapper {
         return executed;
     }
 
+    protected prepareCairoToSierraOptions(options: CairoToSierraOptions): string[] {
+        const args = [];
+
+        if (options?.replaceIds === true) {
+            args.push("-r");
+        }
+
+        if (options.allowedLibfuncsListName) {
+            args.push("--allowed-libfuncs-list-name", options.allowedLibfuncsListName);
+        }
+
+        if (options.allowedLibfuncsListFile) {
+            args.push("--allowed-libfuncs-list-file", options.allowedLibfuncsListFile);
+        }
+
+        args.push(options.path);
+
+        if (options.output) {
+            args.push(options.output);
+        }
+
+        return args;
+    }
+
+    protected prepareSierraToCasmOptions(options: SierraToCasmOptions): string[] {
+        const args = [];
+        if (options.allowedLibfuncsListName) {
+            args.push("--allowed-libfuncs-list-name", options.allowedLibfuncsListName);
+        }
+
+        if (options.allowedLibfuncsListFile) {
+            args.push("--allowed-libfuncs-list-file", options.allowedLibfuncsListFile);
+        }
+
+        if (options?.addPythonicHints === true) {
+            args.push("--add-pythonic-hints");
+        }
+
+        args.push(options.file);
+
+        if (options.output) {
+            args.push(options.output);
+        }
+
+        return args;
+    }
+
+    protected getCairo1Command(binDirPath: string, binCommand: string, args: string[]): string[] {
+        if (!binDirPath) {
+            const msg =
+                "No compiler bin directory specified\n" +
+                "Specify one of {dockerizedVersion,cairo1BinDir} in the hardhat config file OR --cairo1-bin-dir in the CLI";
+            throw new StarknetPluginError(msg);
+        }
+
+        const cairo1Bin = path.join(binDirPath, binCommand);
+        return [cairo1Bin, ...args];
+    }
+
     protected prepareInteractOptions(options: InteractWrapperOptions): string[] {
         const prepared = [
             ...options.choice.cliCommand,
-            "--abi",
-            options.abi,
             "--feeder_gateway_url",
             this.gatewayUrl,
             "--gateway_url",
@@ -221,6 +338,10 @@ export abstract class StarknetWrapper {
             "--address",
             options.address
         ];
+
+        if (options.abi) {
+            prepared.push("--abi", options.abi);
+        }
 
         if (options.inputs && options.inputs.length) {
             prepared.push("--inputs", ...options.inputs);
@@ -234,10 +355,11 @@ export abstract class StarknetWrapper {
             prepared.push("--block_number", options.blockNumber.toString());
         }
 
+        prepared.push("--chain_id", this.chainID);
+
         if (options.wallet) {
             prepared.push("--wallet", options.wallet);
             prepared.push("--network_id", this.networkID);
-            prepared.push("--chain_id", this.chainID);
 
             if (options.account) {
                 prepared.push("--account", options.account);
@@ -422,6 +544,22 @@ export abstract class StarknetWrapper {
         return executed.stdout.toString().trim();
     }
 
+    public async getCompiledClassHash(casmPath: string): Promise<string> {
+        const executed = await this.execute("get_compiled_class_hash", [casmPath]);
+        if (executed.statusCode) {
+            throw new StarknetPluginError(executed.stderr.toString());
+        }
+        return executed.stdout.toString().trim();
+    }
+
+    public async getSierraContractClassHash(casmPath: string): Promise<string> {
+        const executed = await this.execute("get_contract_class_hash", [casmPath]);
+        if (executed.statusCode) {
+            throw new StarknetPluginError(executed.stderr.toString());
+        }
+        return executed.stdout.toString().trim();
+    }
+
     public async migrateContract(options: MigrateContractWrapperOptions): Promise<ProcessResult> {
         const commandArr = [...options.files];
 
@@ -445,7 +583,7 @@ export abstract class StarknetWrapper {
             from_address: fromAddress,
             to_address: toAddress,
             entry_point_selector: hash.getSelectorFromName(functionName),
-            payload: inputs.map((item) => toHex(toBN(item)))
+            payload: inputs.map((item) => number.toHex(number.toBN(item)))
         };
 
         const response = await axios.post(
@@ -471,26 +609,45 @@ type String2String = { [path: string]: string };
 
 export class DockerWrapper extends StarknetWrapper {
     constructor(
-        image: Image,
-        rootPath: string,
+        private image: Image,
+        private rootPath: string,
         accountPaths: string[],
         cairoPaths: string[],
         hre: HardhatRuntimeEnvironment
     ) {
-        super(new StarknetDockerProxy(image, rootPath, accountPaths, cairoPaths), hre);
+        const externalServer = new StarknetDockerProxy(image, rootPath, accountPaths, cairoPaths);
+        super(externalServer, hre);
         console.log(
             `${PLUGIN_NAME} plugin using dockerized environment (${getFullImageName(image)})`
         );
     }
 
-    protected override get gatewayUrl(): string {
-        return adaptUrl(this.hre.starknet.networkConfig.url);
+    public async compileCairoToSierra(options: CairoToSierraOptions): Promise<ProcessResult> {
+        const args = this.prepareCairoToSierraOptions(options);
+        const command = this.getCairo1Command(DOCKER_HOST_BIN_PATH, CAIRO1_COMPILE_BIN, args);
+        const externalServer = new DockerCairo1Compiler(this.image, [this.rootPath], command);
+
+        return await externalServer.compileCairo1();
+    }
+
+    public async compileSierraToCasm(options: SierraToCasmOptions): Promise<ProcessResult> {
+        const args = this.prepareSierraToCasmOptions(options);
+        const command = this.getCairo1Command(
+            DOCKER_HOST_BIN_PATH,
+            CAIRO1_SIERRA_COMPILE_BIN,
+            args
+        );
+        const externalServer = new DockerCairo1Compiler(this.image, [this.rootPath], command);
+
+        return await externalServer.compileCairo1();
     }
 
     public async interact(options: InteractWrapperOptions): Promise<ProcessResult> {
-        const binds: String2String = {
-            [options.abi]: options.abi
-        };
+        const binds: String2String = {};
+
+        if (options.abi) {
+            binds[options.abi] = options.abi;
+        }
 
         if (options.accountDir) {
             binds[options.accountDir] = options.accountDir;
@@ -519,6 +676,22 @@ export class VenvWrapper extends StarknetWrapper {
 
     protected override get gatewayUrl(): string {
         return this.hre.starknet.networkConfig.url;
+    }
+
+    public async compileCairoToSierra(options: CairoToSierraOptions): Promise<ProcessResult> {
+        const args = this.prepareCairoToSierraOptions(options);
+        const command = this.getCairo1Command(options.binDirPath, CAIRO1_COMPILE_BIN, args);
+
+        const executed = exec(command.join(" "));
+        return executed;
+    }
+
+    public async compileSierraToCasm(options: SierraToCasmOptions): Promise<ProcessResult> {
+        const args = this.prepareSierraToCasmOptions(options);
+        const command = this.getCairo1Command(options.binDirPath, CAIRO1_SIERRA_COMPILE_BIN, args);
+
+        const executed = exec(command.join(" "));
+        return executed;
     }
 
     public async interact(options: InteractWrapperOptions): Promise<ProcessResult> {

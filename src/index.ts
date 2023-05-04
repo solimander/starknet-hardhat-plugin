@@ -43,14 +43,15 @@ import {
 import { DockerWrapper, VenvWrapper } from "./starknet-wrappers";
 import {
     amarnaAction,
-    starknetCompileAction,
+    starknetDeprecatedCompileAction,
     starknetVoyagerAction,
     starknetTestAction,
     starknetRunAction,
     starknetPluginVersionAction,
     starknetMigrateAction,
     starknetNewAccountAction,
-    starknetDeployAccountAction
+    starknetDeployAccountAction,
+    starknetCompileCairo1Action
 } from "./task-actions";
 import {
     bigIntToShortStringUtil,
@@ -220,10 +221,17 @@ extendEnvironment((hre) => {
             hre.config.paths.cairoPaths || [],
             hre
         );
+
+        if (hre.config.starknet.cairo1BinDir) {
+            throw new StarknetPluginError(
+                `cairo1BinDir cannot be used with dockerized plugin.
+Remove cairo1BinDir to use the default dockerized cairo1 compiler OR specify a local venv.`
+            );
+        }
     }
 });
 
-task("starknet-compile", "Compiles Starknet contracts")
+task("starknet-compile-deprecated", "Compiles Starknet contracts")
     .addOptionalVariadicPositionalParam(
         "paths",
         "The paths to be used for deployment.\n" +
@@ -237,7 +245,28 @@ task("starknet-compile", "Compiles Starknet contracts")
     )
     .addFlag("accountContract", "Allows compiling an account contract.")
     .addFlag("disableHintValidation", "Allows compiling a contract with any python code in hints.")
-    .setAction(starknetCompileAction);
+    .setAction(starknetDeprecatedCompileAction);
+
+task("starknet-compile", "Compiles Starknet cairo1 contracts")
+    .addOptionalVariadicPositionalParam(
+        "paths",
+        "The paths are source files of contracts to be compiled.\n" +
+            "Each of the provided paths is recursively looked into while searching for compilation artifacts.\n" +
+            "If no paths are provided, the default contracts directory is traversed."
+    )
+    .addOptionalParam(
+        "cairo1BinDir",
+        "Allows to specify locally installed cairo1 compiler directory.\n" +
+            "e.g. --cairo1-bin-dir 'path/to/binDir' or can also be set on hardhat.config.ts file."
+    )
+    .addFlag("replaceIds", "Replaces sierra ids with human-readable ones.")
+    .addOptionalParam(
+        "allowedLibfuncsListName",
+        "The allowed libfuncs list to use (default: most recent audited list)."
+    )
+    .addOptionalParam("allowedLibfuncsListFile", "A file of the allowed libfuncs list to use.")
+    .addFlag("addPythonicHints", "Add pythonic hints.")
+    .setAction(starknetCompileCairo1Action);
 
 extendEnvironment((hre) => {
     hre.starknet = {

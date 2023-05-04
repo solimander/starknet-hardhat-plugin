@@ -8,7 +8,7 @@ import {
     HEXADECIMAL_REGEX,
     CHECK_STATUS_TIMEOUT
 } from "../constants";
-import { adaptLog, copyWithBigint, sleep, warn } from "../utils";
+import { adaptLog, copyWithBigint, findConstructor, formatSpaces, sleep, warn } from "../utils";
 import { adaptInputUtil, adaptOutputUtil } from "../adapt";
 import { HardhatRuntimeEnvironment, Wallet } from "hardhat/types";
 import { hash } from "starknet";
@@ -39,7 +39,9 @@ export type TxStatus =
 
 export type InvokeResponse = string;
 
-export type StarknetContractFactoryConfig = StarknetContractConfig & {
+export type StarknetContractFactoryConfig = {
+    abiPath: string;
+    casmPath?: string;
     metadataPath: string;
     hre: HardhatRuntimeEnvironment;
 };
@@ -47,6 +49,7 @@ export type StarknetContractFactoryConfig = StarknetContractConfig & {
 export interface StarknetContractConfig {
     abiPath: string;
     hre: HardhatRuntimeEnvironment;
+    isCairo1: boolean;
 }
 
 export type Numeric = number | bigint;
@@ -286,6 +289,7 @@ export interface DeclareOptions {
     maxFee?: Numeric;
     overhead?: number;
     constants?: Record<string, string>;
+    version?: number;
 }
 
 export interface DeployOptions {
@@ -305,6 +309,7 @@ export interface InvokeOptions {
     wallet?: Wallet;
     nonce?: Numeric;
     maxFee?: Numeric;
+    rawInput?: boolean;
     overhead?: number;
 }
 
@@ -314,6 +319,7 @@ export interface CallOptions {
     blockNumber?: BlockNumber;
     nonce?: Numeric;
     maxFee?: Numeric;
+    rawInput?: boolean;
     rawOutput?: boolean;
     token?: string;
     salt?: string;
@@ -338,6 +344,17 @@ export interface BlockIdentifier {
     blockHash?: string;
 }
 
+export type SieraEntryPointsByType = {
+    CONSTRUCTOR: SieraContractEntryPointFields[];
+    EXTERNAL: SieraContractEntryPointFields[];
+    L1_HANDLER: SieraContractEntryPointFields[];
+};
+
+export type SieraContractEntryPointFields = {
+    selector: string;
+    function_idx: number;
+};
+
 export type NonceQueryOptions = BlockIdentifier;
 
 export class StarknetContractFactory {
@@ -346,6 +363,7 @@ export class StarknetContractFactory {
     public abiPath: string;
     private constructorAbi: starknet.CairoFunction;
     public metadataPath: string;
+    public casmPath: string;
     private classHash: string;
 
     constructor(config: StarknetContractFactoryConfig) {
@@ -353,20 +371,47 @@ export class StarknetContractFactory {
         this.abiPath = config.abiPath;
         this.abi = readAbi(this.abiPath);
         this.metadataPath = config.metadataPath;
+        this.casmPath = config.casmPath;
 
-        // find constructor
-        for (const abiEntryName in this.abi) {
-            const abiEntry = this.abi[abiEntryName];
-            if (abiEntry.type === "constructor") {
-                this.constructorAbi = <starknet.CairoFunction>abiEntry;
-            }
-        }
+        const constructorPredicate = this.resolveContructorPredicate();
+        this.constructorAbi = findConstructor(this.abi, constructorPredicate);
     }
 
+    private resolveContructorPredicate(): (abiEntry: starknet.AbiEntry) => boolean {
+        if (!this.isCairo1()) {
+            return (abiEntry: starknet.AbiEntry): boolean => {
+                return abiEntry.type === "constructor";
+            };
+        }
+
+        const casmJson = JSON.parse(fs.readFileSync(this.casmPath, "utf-8"));
+        if (casmJson?.compiler_version.split(".")[0] !== "1") {
+            const msg = ".CASM json has to contain compiler_version '1.*.*'";
+            throw new StarknetPluginError(msg);
+        }
+
+        if (!casmJson?.entry_points_by_type?.CONSTRUCTOR) {
+            const msg = "Invalid .CASM structure: No CONSTRUCTOR in entry_points_by_type";
+            throw new StarknetPluginError(msg);
+        }
+
+        // Can be removed after new cairo release.
+        if (casmJson.entry_points_by_type.CONSTRUCTOR.length > 1) {
+            const msg = "There can be at most 1 constructor.";
+            throw new StarknetPluginError(msg);
+        }
+
+        // Can be simplified once starkware fixes multiple constructor issue.
+        // Precomputed selector can be used if only 'constructor' name allowed
+        const selector = casmJson.entry_points_by_type.CONSTRUCTOR[0].selector;
+        return (abiEntry: starknet.AbiEntry): boolean => {
+            return hash.getSelectorFromName(abiEntry.name) === selector;
+        };
+    }
     /**
      * Declare a contract class.
      * @param options optional arguments to class declaration
-     * @returns the class hash as a hex string
+     * @returns transaction hash as a hex string
      */
     async declare(options: DeclareOptions = {}): Promise<string> {
         const executed = await this.hre.starknetWrapper.declare({
@@ -384,14 +429,13 @@ export class StarknetContractFactory {
         }
 
         const executedOutput = executed.stdout.toString();
-        const classHash = extractClassHash(executedOutput);
         const txHash = extractTxHash(executedOutput);
 
         return new Promise((resolve, reject) => {
             iterativelyCheckStatus(
                 txHash,
                 this.hre.starknetWrapper,
-                () => resolve(classHash),
+                () => resolve(txHash),
                 (error) => {
                     reject(new StarknetPluginError(`Declare transaction ${txHash}: ${error}`));
                 }
@@ -412,7 +456,8 @@ export class StarknetContractFactory {
             this.constructorAbi.name,
             constructorArguments,
             this.constructorAbi.inputs,
-            this.abi
+            this.abi,
+            this.isCairo1()
         );
     }
 
@@ -433,7 +478,8 @@ export class StarknetContractFactory {
         }
         const contract = new StarknetContract({
             abiPath: this.abiPath,
-            hre: this.hre
+            hre: this.hre,
+            isCairo1: this.isCairo1()
         });
         contract.address = address;
         return contract;
@@ -443,10 +489,14 @@ export class StarknetContractFactory {
         return this.abiPath;
     }
 
+    isCairo1() {
+        return !!this.casmPath;
+    }
+
     async getClassHash() {
-        if (!this.classHash) {
-            this.classHash = await this.hre.starknetWrapper.getClassHash(this.metadataPath);
-        }
+        const method = this.isCairo1() ? "getSierraContractClassHash" : "getClassHash";
+        this.classHash =
+            this.classHash ?? (await this.hre.starknetWrapper[method](this.metadataPath));
         return this.classHash;
     }
 }
@@ -454,6 +504,7 @@ export class StarknetContractFactory {
 export class StarknetContract {
     private hre: HardhatRuntimeEnvironment;
     private abi: starknet.Abi;
+    private isCairo1: boolean;
     private eventsSpecifications: starknet.EventAbi;
     private abiPath: string;
     private _address: string;
@@ -462,6 +513,7 @@ export class StarknetContract {
     constructor(config: StarknetContractConfig) {
         this.hre = config.hre;
         this.abiPath = config.abiPath;
+        this.isCairo1 = config.isCairo1;
         this.abi = readAbi(this.abiPath);
         this.eventsSpecifications = extractEventSpecifications(this.abi);
     }
@@ -494,11 +546,19 @@ export class StarknetContract {
             throw new StarknetPluginError("Contract not deployed");
         }
 
-        const adaptedInput = this.adaptInput(functionName, args);
+        const adaptedInput = options.rawInput
+            ? <string[]>args
+            : this.adaptInput(functionName, args);
+
+        // omit cairo 1.0 ABIs as it's not supported by the cairo-lang parser.
+        const abi =
+            this.abiPath && !fs.readFileSync(this.abiPath, "utf8").includes("core::")
+                ? this.abiPath
+                : undefined;
         const executed = await this.hre.starknetWrapper.interact({
             choice,
             address: this.address,
-            abi: this.abiPath,
+            abi,
             functionName: functionName,
             inputs: adaptedInput,
             signature: handleSignature(options.signature),
@@ -669,7 +729,7 @@ export class StarknetContract {
             throw new StarknetPluginError("Arguments should be passed in the form of an object.");
         }
 
-        return adaptInputUtil(functionName, args, func.inputs, this.abi);
+        return adaptInputUtil(functionName, args, func.inputs, this.abi, this.isCairo1);
     }
 
     /**
@@ -713,5 +773,43 @@ export class StarknetContract {
             throw new StarknetPluginError(msg);
         }
         return decodedEvents;
+    }
+}
+
+export interface ContractClassConfig extends StarknetContractConfig {
+    sierraProgram: string;
+    contractClassVersion: string;
+    entryPointsByType: SieraEntryPointsByType;
+}
+
+export class Cairo1ContractClass extends StarknetContract {
+    protected sierraProgram: string;
+    protected contractClassVersion: string;
+    protected entryPointsByType: SieraEntryPointsByType;
+
+    constructor(config: ContractClassConfig) {
+        super(config);
+
+        this.sierraProgram = config.sierraProgram;
+        this.contractClassVersion = config.contractClassVersion;
+        this.entryPointsByType = config.entryPointsByType;
+    }
+
+    /**
+     * Returns the compiled class.
+     * @returns object of a compiled contract class
+     */
+    getCompiledClass() {
+        return {
+            sierra_program: this.sierraProgram,
+            entry_points_by_type: this.entryPointsByType,
+            contract_class_version: this.contractClassVersion,
+            abi: this.getFormattedAbi()
+        };
+    }
+
+    getFormattedAbi() {
+        const abiArr = Object.values(this.getAbi());
+        return formatSpaces(JSON.stringify(abiArr));
     }
 }

@@ -1,3 +1,5 @@
+import fs from "fs";
+import { glob } from "glob";
 import {
     HardhatNetworkConfig,
     HardhatRuntimeEnvironment,
@@ -7,34 +9,30 @@ import {
     ProjectPathsConfig,
     VmLang
 } from "hardhat/types";
-import { StarknetPluginError } from "./starknet-plugin-error";
+import path from "path";
+import { json, stark, CompiledContract } from "starknet";
+
+import { handleInternalContractArtifacts } from "./account-utils";
 import {
+    ABI_SUFFIX,
     ALPHA_MAINNET,
     ALPHA_MAINNET_INTERNALLY,
     ALPHA_TESTNET,
     ALPHA_TESTNET_INTERNALLY,
     ALPHA_TESTNET_2,
     ALPHA_TESTNET_2_INTERNALLY,
+    DEFAULT_DEVNET_CAIRO_VM,
     DEFAULT_STARKNET_ACCOUNT_PATH,
     INTEGRATED_DEVNET,
     INTEGRATED_DEVNET_INTERNALLY,
-    UDC_ADDRESS,
     StarknetChainId,
-    DEFAULT_DEVNET_CAIRO_VM
+    UDC_ADDRESS
 } from "./constants";
-import * as path from "path";
-import * as fs from "fs";
-import { glob } from "glob";
-import { promisify } from "util";
-import { Numeric, StarknetContract } from "./types";
-import { stark } from "starknet";
-import { handleInternalContractArtifacts } from "./account-utils";
 import { getContractFactoryUtil } from "./extend-utils";
-import { compressProgram } from "starknet/utils/stark";
-import { CompiledContract } from "starknet";
-import JsonBigint from "json-bigint";
+import { StarknetPluginError } from "./starknet-plugin-error";
+import { Abi, AbiEntry, CairoFunction } from "./starknet-types";
+import { Cairo1ContractClass, ContractClassConfig, Numeric, StarknetContract } from "./types";
 
-const globPromise = promisify(glob);
 /**
  * Replaces Starknet specific terminology with the terminology used in this plugin.
  *
@@ -50,32 +48,6 @@ export function adaptLog(msg: string): string {
         .replace("the 'new_account' command", "'hardhat starknet-new-account'")
         .split(".\nTraceback (most recent call last)")[0] // remove duplicated log
         .replace(/\\n/g, "\n"); // use newlines from json response for formatting
-}
-
-const DOCKER_HOST = "host.docker.internal";
-const MACOS_PLATFORM = "darwin";
-/**
- * Adapts `url` by replacing localhost and 127.0.0.1 with `host.internal.docker`
- * @param url string representing the url to be adapted
- * @returns adapted url
- */
-export function adaptUrl(url: string): string {
-    if (process.platform === MACOS_PLATFORM) {
-        for (const protocol of ["http://", "https://", ""]) {
-            for (const host of ["localhost", "127.0.0.1"]) {
-                if (url === `${protocol}${host}`) {
-                    return `${protocol}${DOCKER_HOST}`;
-                }
-
-                const prefix = `${protocol}${host}:`;
-                if (url.startsWith(prefix)) {
-                    return url.replace(prefix, `${protocol}${DOCKER_HOST}:`);
-                }
-            }
-        }
-    }
-
-    return url;
 }
 
 export function getDefaultHttpNetworkConfig(
@@ -122,7 +94,7 @@ export function getDefaultHardhatNetworkConfig(url: string): HardhatNetworkConfi
 export async function traverseFiles(traversable: string, fileCriteria = "*") {
     let paths: string[] = [];
     if (fs.lstatSync(traversable).isDirectory()) {
-        paths = await globPromise(path.join(traversable, "**", fileCriteria));
+        paths = await glob(path.join(traversable, "**", fileCriteria));
     } else {
         paths.push(traversable);
     }
@@ -324,23 +296,52 @@ export class UDC {
 }
 
 export function readContract(contractPath: string) {
-    const { parse } = handleJsonWithBigInt(false);
-    const parsedContract = parse(
+    const parsedContract = json.parse(
         fs.readFileSync(contractPath).toString("ascii")
     ) as CompiledContract;
     return {
         ...parsedContract,
-        program: compressProgram(parsedContract.program)
+        program: stark.compressProgram(parsedContract.program)
     };
 }
 
-export function handleJsonWithBigInt(alwaysParseAsBig: boolean) {
-    return JsonBigint({
-        alwaysParseAsBig,
-        useNativeBigInt: true,
-        protoAction: "preserve",
-        constructorAction: "preserve"
-    });
+export function readCairo1Contract(contractPath: string) {
+    const parsedContract = json.parse(fs.readFileSync(contractPath).toString("ascii"));
+    const { contract_class_version, entry_points_by_type, sierra_program } = parsedContract;
+
+    const contract = new Cairo1ContractClass({
+        abiPath: path.join(
+            path.dirname(contractPath),
+            `${path.parse(contractPath).name}${ABI_SUFFIX}`
+        ),
+        sierraProgram: stark.compressProgram(formatSpaces(JSON.stringify(sierra_program))),
+        entryPointsByType: entry_points_by_type,
+        contractClassVersion: contract_class_version
+    } as ContractClassConfig);
+
+    return contract;
+}
+
+/**
+ * Json string is transformed into a formatted string without newlines.
+ * @param json string
+ * @returns string
+ */
+export function formatSpaces(json: string): string {
+    let insideQuotes = false;
+    let newString = "";
+    for (const char of json) {
+        // eslint-disable-next-line
+        if (char === '"' && newString.endsWith("\\") === false) {
+            insideQuotes = !insideQuotes;
+        }
+        if (insideQuotes) {
+            newString += char;
+        } else {
+            newString += char === ":" ? ": " : char === "," ? ", " : char;
+        }
+    }
+    return newString;
 }
 
 export function bnToDecimalStringArray(rawCalldata: bigint[]) {
@@ -350,4 +351,15 @@ export function bnToDecimalStringArray(rawCalldata: bigint[]) {
 export function estimatedFeeToMaxFee(amount?: bigint, overhead = 0.5) {
     overhead = Math.round((1 + overhead) * 100);
     return (amount * BigInt(overhead)) / BigInt(100);
+}
+
+export function findConstructor(abi: Abi, predicate: (entry: AbiEntry) => boolean): CairoFunction {
+    for (const abiEntryName in abi) {
+        const abiEntry = abi[abiEntryName];
+        if (predicate(abiEntry)) {
+            return <CairoFunction>abiEntry;
+        }
+    }
+
+    return undefined;
 }

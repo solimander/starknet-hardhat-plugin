@@ -56,10 +56,10 @@ This plugin was tested with:
 
 This plugin defines the following Hardhat commands (also called tasks):
 
-### `starknet-compile`
+### `starknet-compile-deprecated`
 
 ```
-$ npx hardhat starknet-compile [PATH...] [--cairo-path "<LIB_PATH1>:<LIB_PATH2>:..."] [--account-contract] [--disable-hint-validation]
+$ npx hardhat starknet-compile-deprecated [PATH...] [--cairo-path "<LIB_PATH1>:<LIB_PATH2>:..."] [--account-contract] [--disable-hint-validation]
 ```
 
 If no paths are provided, all Starknet contracts in the default contracts directory are compiled. Paths can be files and directories.
@@ -69,6 +69,14 @@ If no paths are provided, all Starknet contracts in the default contracts direct
 `--account-contract` allows compiling an account contract.
 
 `--disable-hint-validation` allows compiling a contract without hint validation (any python code is allowed in hints, ex: print ...).
+
+### `starknet-compile`
+
+```
+$ npx hardhat starknet-compile [PATH...] [--manifest-path <PATH>]
+```
+
+Compiles Starknet cairo1 contracts in the provided path. Paths can be files and directories. You can use a custom compiler by providing the path of its `Cargo.toml` to `--manifest-path` or to the `manifestPath` option in your hardhat config file.
 
 ### `starknet-verify`
 
@@ -157,7 +165,7 @@ import { starknet } from "hardhat";
 const starknet = require("hardhat").starknet;
 ```
 
-To see all the utilities introduced by the `starknet` object, check [this](https://github.com/Shard-Labs/starknet-hardhat-plugin/blob/master/src/types/starknet.ts) out.
+To see all the utilities introduced by the `starknet` object, check [this](https://github.com/0xSpaceShard/starknet-hardhat-plugin/blob/master/src/types/starknet.ts) out.
 
 ## Testing
 
@@ -183,6 +191,7 @@ These examples are inspired by the official [Starknet Python tutorial](https://w
     -   the extension can be omitted:
         -   `getContractFactory("subdir/MyContract")`
         -   `getContractFactory("MyContract")`
+-   Nested arrays are currently not supported (eg. `core::array::Array::<core::array::Array<felt252>>`)
 
 ### Test examples
 
@@ -218,10 +227,9 @@ describe("My Test", function () {
     // not compatible with accounts deployed with Starknet CLI
     const account = await starknet.OpenZeppelinAccount.getAccountFromAddress(...);
     const contractFactory = await starknet.getContractFactory("MyContract");
-    const classHash = await account.declare(contractFactory);  // class declaration
-
-    // two ways to obtain the class hash
-    expect(classHash).to.equal(await contractFactory.getClassHash());
+    // will call declare version 2 if contract is cairo 1
+    const txHash = await account.declare(contractFactory);  // class declaration
+    const classHash = await contractFactory.getClassHash();
 
     const constructorArgs = { initial_balance: 0 };
     const options = { maxFee: ... };
@@ -290,14 +298,11 @@ it("should estimate fee", async function () {
     await account.invoke(contract, "method", { arg1: 10n }); // computes max fee implicitly
 
     // computes message estimate fee
-    const estimatedMessageFee = await l2contract.estimateMessageFee(
-            "deposit",
-            {
-                from_address: L1_CONTRACT_ADDRESS,
-                amount: 123,
-                user: 1
-            }
-        );
+    const estimatedMessageFee = await l2contract.estimateMessageFee("deposit", {
+        from_address: L1_CONTRACT_ADDRESS,
+        amount: 123,
+        user: 1
+    });
 });
 ```
 
@@ -307,7 +312,8 @@ it("should estimate fee", async function () {
 it("should forward to the implementation contract", async function () {
     const implementationFactory = await starknet.getContractFactory("contract");
     const account = ...;
-    const implementationClassHash = await account.declare(implementationFactory);
+    const txHash = await account.declare(implementationFactory);
+    const implementationClassHash = await implementationFactory.getClassHash();
 
     const proxyFactory = await starknet.getContractFactory("delegate_proxy");
     await account.declare(proxyFactory);
@@ -342,27 +348,33 @@ it("should return transaction data and transaction receipt", async function () {
 });
 ```
 
-For more usage examples, including tuple, array and struct support, as well as Starknet CLI wallet support, check [sample-test.ts](https://github.com/Shard-Labs/starknet-hardhat-example/blob/master/test/sample-test.ts) of [starknet-hardhat-example](https://github.com/Shard-Labs/starknet-hardhat-example).
+For more usage examples, including tuple, array and struct support, as well as Starknet CLI wallet support, check [sample-test.ts](https://github.com/0xSpaceShard/starknet-hardhat-example/blob/master/test/sample-test.ts) of [starknet-hardhat-example](https://github.com/0xSpaceShard/starknet-hardhat-example).
 
 ### Devnet examples
 
 #### L1-L2 communication (Postman message exchange with Devnet)
 
-Exchanging messages between L1 ([Ganache](https://www.npmjs.com/package/ganache), [Hardhat node](https://hardhat.org/hardhat-network/#running-stand-alone-in-order-to-support-wallets-and-other-software), Ethereum testnet) and L2 (only supported for [starknet-devnet](https://github.com/Shard-Labs/starknet-devnet)) can be done using this plugin:
+Exchanging messages between L1 ([Ganache](https://www.npmjs.com/package/ganache), [Hardhat node](https://hardhat.org/hardhat-network/#running-stand-alone-in-order-to-support-wallets-and-other-software), Ethereum testnet) and L2 (only supported for [starknet-devnet](https://github.com/0xSpaceShard/starknet-devnet)) can be done using this plugin:
 
 -   Ensure there is an available L1 network and that you know its RPC endpoint URL.
 -   Load an L1 Messaging contract using `starknet.devnet.loadL1MessagingContract`.
 -   Call `starknet.devnet.flush` after you `invoke` your contract and want to propagate your message.
 -   When running a hardhat test or script which relies on `network["config"]`, specify the name of an L1 network you defined in `hardhat.config`. Use `npx hardhat test --network <NETWORK_NAME>`. Network `localhost` is predefined in hardhat so `--network localhost` should work if you're using e.g. `npx hardhat node` as the L1 network.
--   Check [this example](https://github.com/Shard-Labs/starknet-hardhat-example/blob/master/test/postman.test.ts#L98) for more info.
+-   Check [this example](https://github.com/0xSpaceShard/starknet-hardhat-example/blob/master/test/postman.test.ts#L98) for more info.
 
 ```typescript
   it("should exchange messages with Devnet", async function() {
     await starknet.devnet.loadL1MessagingContract(...);
+
+    // Exact syntax may vary depending on your L1 contract interaction library
     const l1contract = ...;
     const l2contract = ...;
 
-    await l1contract.send(...); // depending on your L1 contract interaction library
+    // If the L1 function is expected to send a message to L2,
+    // it needs to be paid for by providing some value to the transaction
+    await l1contract.send(..., {
+        value: 1000 // pay for L1->L2 message
+    });
     await starknet.devnet.flush();
 
     const account = ...;
@@ -373,7 +385,7 @@ Exchanging messages between L1 ([Ganache](https://www.npmjs.com/package/ganache)
 
 #### Mock message between L1 and L2
 
-To send mock messages between L1 and L2 the following two functions can be used. Detailed example can be found [here](https://github.com/Shard-Labs/starknet-hardhat-example/blob/master/test/postman.test.ts#170).
+To send mock messages between L1 and L2 the following two functions can be used. Detailed example can be found [here](https://github.com/0xSpaceShard/starknet-hardhat-example/blob/master/test/postman.test.ts#170).
 
 ```typescript
 starknet.devnet.sendMessageToL2(...); // Sends message to L2
@@ -406,7 +418,7 @@ await starknet.devnet.load(path); // path for dump file (eg. dump.pkl)
 
 #### Advancing time
 
-The plugin comes with support for [Devnet's timestamp management](https://shard-labs.github.io/starknet-devnet/docs/guide/advancing-time).
+The plugin comes with support for [Devnet's timestamp management](https://0xspaceshard.github.io/starknet-devnet/docs/guide/advancing-time).
 The time offset for each generated block can be increased by calling `starknet.devnet.increaseTime()`. The time for the next block can be set by calling `starknet.devnet.setTime()`, with subsequent blocks keeping the set offset.
 
 Warning: _block time can be set in the past and lead to unexpected behaviour!_
@@ -418,7 +430,7 @@ await starknet.devnet.increaseTime(1000); // time in seconds
 
 #### Creating an empty block
 
-Devnet offers [empty block creation](https://shard-labs.github.io/starknet-devnet/docs/guide/blocks#create-an-empty-block). It can be useful to make available those changes that take effect with the next block.
+Devnet offers [empty block creation](https://0xspaceshard.github.io/starknet-devnet/docs/guide/blocks#create-an-empty-block). It can be useful to make available those changes that take effect with the next block.
 
 ```typescript
 const emptyBlock = await starknet.devnet.createBlock();
@@ -426,7 +438,7 @@ const emptyBlock = await starknet.devnet.createBlock();
 
 #### Mint tokens to an account
 
-Devnet allows [minting token](https://shard-labs.github.io/starknet-devnet/docs/guide/mint-token#mint-with-a-transaction). You can call `starknet.devnet.mint` like this
+Devnet allows [minting token](https://0xspaceshard.github.io/starknet-devnet/docs/guide/mint-token#mint-with-a-transaction). You can call `starknet.devnet.mint` like this
 
 ```typescript
 const lite_mode = true; // Optional, Default true
@@ -440,7 +452,7 @@ To debug Starknet contracts, you can use `print()` in cairo hints in your contra
 Compile with `--disable-hint-validation` flag to allow hints.
 
 ```
-hardhat starknet-compile --disable-hint-validation
+hardhat starknet-compile-deprecated --disable-hint-validation
 ```
 
 For example, when calling the following `increase_balance` with input `25`.
@@ -515,6 +527,30 @@ module.exports = {
 };
 ```
 
+### Manifest Path
+
+Allows to specify locally installed cairo1 compiler path. This can be set both on `hardhat.config.ts` file and throught the CLI.
+
+```typescript
+module.exports = {
+    starknet: {
+        manifestPath: "path/to/Cargo.toml"
+    }
+};
+```
+
+### Compiler version
+
+If you're using `dockerizedVersion`, it will also use the dockerized Cairo 1 compiler version. To specify locally installed cairo1 compiler path, this is how you can set it:
+
+```typescript
+module.exports = {
+    starknet: {
+        manifestPath: "path/to/my-compiler/Cargo.toml"
+    }
+};
+```
+
 ### Request Timeout
 
 Default requestTimeout is 30s. It can be changed using the following configuration.
@@ -523,7 +559,7 @@ You may need to increase the timeout value in some situation (declaring large sm
 ```typescript
 module.exports = {
     starknet: {
-        requestTimeout: 90_000, // 90s
+        requestTimeout: 90_000 // 90s
     }
 };
 ```
@@ -542,7 +578,7 @@ module.exports = {
     // Has to be different from the value set in `paths.artifacts` (which is used by core Hardhat and has a default value of `artifacts`).
     starknetArtifacts: "also-my-own-starknet-path",
 
-   // Same purpose as the `--cairo-path` argument of the `starknet-compile` command
+   // Same purpose as the `--cairo-path` argument of the `starknet-compile-deprecated` command
    // Allows specifying the locations of imported files, if necessary.
     cairoPaths: ["my/own/cairo-path1", "also/my/own/cairo-path2"]
   }
@@ -554,7 +590,7 @@ module.exports = {
 
 To set the network used in your Hardhat scripts/tests, use `starknet["network"]` or the `--starknet-network` CLI option. Not specifying one will default to using alpha-goerli. Do not confuse this network with Hardhat's default `--network` option which refers to the L1 network.
 
-A faster approach is to use [starknet-devnet](https://github.com/Shard-Labs/starknet-devnet), a Ganache-like local testnet.
+A faster approach is to use [starknet-devnet](https://github.com/0xSpaceShard/starknet-devnet), a Ganache-like local testnet.
 
 ```javascript
 module.exports = {
@@ -574,15 +610,14 @@ Predefined networks include `alpha-goerli`, `alpha-goerli2`, `alpha-mainnet` and
 
 ### Runtime network - Integrated Devnet
 
-[starknet-devnet](https://github.com/Shard-Labs/starknet-devnet) is available out of the box as a starknet network called `integrated-devnet`. By default, it will spawn Devnet using its Docker image and listening on `http://127.0.0.1:5050`. Target it via the hardhat config file or `--starknet-network integrated-devnet`. Using `integrated-devnet` makes [forking of existing blockchains](https://shard-labs.github.io/starknet-devnet/docs/guide/fork/) very easy.
+[starknet-devnet](https://github.com/0xSpaceShard/starknet-devnet) is available out of the box as a starknet network called `integrated-devnet`. By default, it will spawn Devnet using its Docker image and listening on `http://127.0.0.1:5050`. Target it via the hardhat config file or `--starknet-network integrated-devnet`. Using `integrated-devnet` makes [forking of existing blockchains](https://0xspaceshard.github.io/starknet-devnet/docs/guide/fork/) very easy.
 
 By defining/modifying `networks["integratedDevnet"]` in your hardhat config file, you can specify:
 
 -   the version of Devnet to use (effectively specifying the version of the underlying Docker image)
 -   a Python environment with installed starknet-devnet (can be active environment); this will avoid using the dockerized version
--   CLI arguments to be used on Devnet startup: [options](https://shard-labs.github.io/starknet-devnet/docs/guide/run)
+-   CLI arguments to be used on Devnet startup: [options](https://0xspaceshard.github.io/starknet-devnet/docs/guide/run)
 -   where output should be flushed _(either to the terminal or to a file)_.
--   
 
 ```javascript
 module.exports = {
@@ -599,16 +634,16 @@ module.exports = {
 
       // use python or rust vm implementation
       // vmLang: "python" <- use python vm (default value)
-      // vmLang: "rust" <- use rust vm 
+      // vmLang: "rust" <- use rust vm
       // (rust vm is available out of the box using dockerized integrated-devnet)
       // (rustc and cairo-rs-py required using installed devnet)
-      // read more here : https://shard-labs.github.io/starknet-devnet/docs/guide/run/#run-with-the-rust-implementation-of-cairo-vm
+      // read more here : https://0xspaceshard.github.io/starknet-devnet/docs/guide/run/#run-with-the-rust-implementation-of-cairo-vm
       vmLang: "<VM_LANG>",
 
       // or specify Docker image tag
       dockerizedVersion: "<DEVNET_VERSION>",
 
-      // optional devnet CLI arguments, read more here: https://shard-labs.github.io/starknet-devnet/docs/guide/run
+      // optional devnet CLI arguments, read more here: https://0xspaceshard.github.io/starknet-devnet/docs/guide/run
       args: ["--gas-price", "2000000000", "--fork-network", "alpha-goerli"],
 
       // stdout: "logs/stdout.log" <- dumps stdout to the file
@@ -688,7 +723,7 @@ The example package used is `https://github.com/OpenZeppelin/cairo-contracts` so
 1. Compile
 
 ```
-$ npx hardhat starknet-compile node_modules/openzeppelin__cairo_contracts/src/openzeppelin/token/erc20/presets/ERC20.cairo
+$ npx hardhat starknet-compile-deprecated node_modules/openzeppelin__cairo_contracts/src/openzeppelin/token/erc20/presets/ERC20.cairo
 ```
 
 2. Get contract factory
@@ -764,7 +799,7 @@ module.exports = {
 ## Account
 
 In Starknet, an account is a contract through which you interact with other contracts.
-Its usage is exemplified [earlier in the docs](#accounts) and [in the example repo](https://github.com/Shard-Labs/starknet-hardhat-example/blob/plugin/test/oz-account-test.ts).
+Its usage is exemplified [earlier in the docs](#accounts) and [in the example repo](https://github.com/0xSpaceShard/starknet-hardhat-example/blob/plugin/test/oz-account-test.ts).
 
 There are several Starknet account implementations; this plugin supports the following as properties of `hre.starknet`:
 
@@ -789,10 +824,10 @@ After creating the account, you need to fund it (give it some ETH):
 
 -   On alpha-goerli use [this faucet](https://faucet.goerli.starknet.io/).
 -   On alpha-goerli2 use [this](https://www.newton.so/view/636d020159c30b8efc8d1d86)
--   On starknet-devnet call [`starknet.devnet.mint()`](#mint-tokens-to-an-account) which uses [devnet faucet](https://shard-labs.github.io/starknet-devnet/docs/guide/mint-token/).
+-   On starknet-devnet call [`starknet.devnet.mint()`](#mint-tokens-to-an-account) which uses [devnet faucet](https://0xspaceshard.github.io/starknet-devnet/docs/guide/mint-token/).
 -   Alternatively transfer some amount from an already funded account to the newly deployed account.
 
-If you're facing issues loading the account you've just funded, check out [this issue](https://github.com/Shard-Labs/starknet-hardhat-plugin/issues/281#issuecomment-1354588817).
+If you're facing issues loading the account you've just funded, check out [this issue](https://github.com/0xSpaceShard/starknet-hardhat-plugin/issues/281#issuecomment-1354588817).
 
 ### Get balance
 
@@ -813,13 +848,13 @@ After funding the account, you need to deploy it (in case of `ArgentAccount`, th
 await account.deployAccount({ maxFee: ... });
 ```
 
-Alternatively deploy your account by running [this script](https://github.com/Shard-Labs/starknet-hardhat-example/blob/master/scripts/deploy-account.ts).
+Alternatively deploy your account by running [this script](https://github.com/0xSpaceShard/starknet-hardhat-example/blob/master/scripts/deploy-account.ts).
 
-To successfully deploy `ArgentAccount`, the chain you are interacting with is expected to have `ArgentAccount` contracts declared. Alpha Goerli and Alpha Mainnet satisfy this criterion, but if you're working with Devnet, this is most easily achievable by running Devnet [forked](https://shard-labs.github.io/starknet-devnet/docs/guide/fork) from e.g. Alpha Goerli.
+To successfully deploy `ArgentAccount`, the chain you are interacting with is expected to have `ArgentAccount` contracts declared. Alpha Goerli and Alpha Mainnet satisfy this criterion, but if you're working with Devnet, this is most easily achievable by running Devnet [forked](https://0xspaceshard.github.io/starknet-devnet/docs/guide/fork) from e.g. Alpha Goerli.
 
 ### Reuse account
 
-To retrieve an already deployed Account, use the `getAccountFromAddress` method. Do not use this method for accounts deployed by e.g. Starknet CLI (those are modified OZ accounts that are not compatible with the OZ version supported by this plugin). What may be especially useful are [predeployed+predefined accounts](https://shard-labs.github.io/starknet-devnet/docs/guide/Predeployed-accounts) that come with Devnet (retrieve them with `starknet.devnet.getPredeployedAccounts()`).
+To retrieve an already deployed Account, use the `getAccountFromAddress` method. Do not use this method for accounts deployed by e.g. Starknet CLI (those are modified OZ accounts that are not compatible with the OZ version supported by this plugin). What may be especially useful are [predeployed+predefined accounts](https://0xspaceshard.github.io/starknet-devnet/docs/guide/Predeployed-accounts) that come with Devnet (retrieve them with `starknet.devnet.getPredeployedAccounts()`).
 
 ```typescript
 const account = await starknet.OpenZeppelinAccount.getAccountFromAddress(
@@ -848,6 +883,14 @@ If you don't specify a `maxFee`, one will be calculated for you by applying an o
 ```typescript
 // maxFee will be 40% of estimated fee; if overhead not provided, the default value is used.
 await account.invoke(contract, "foo", { arg1: ... }, { overhead: 0.4 });
+```
+
+Set the `rawInput` option to `true` to suppress validation of the args passed to the contract function:
+
+```typescript
+// pass a direct array
+await account.invoke(contract, "foo", ["10", "20"], { rawInput: true });
+await contract.call("bar", ["30", "40"], { rawInput: true });
 ```
 
 ### Multicalls
@@ -883,4 +926,4 @@ await argentAccount.setGuardian(undefined, { maxFee: 1e18 });
 
 ## More examples
 
-An example Hardhat project using this plugin can be found [here](https://github.com/Shard-Labs/starknet-hardhat-example).
+An example Hardhat project using this plugin can be found [here](https://github.com/0xSpaceShard/starknet-hardhat-example).

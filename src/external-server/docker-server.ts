@@ -1,5 +1,5 @@
 import { HardhatDocker, Image } from "@nomiclabs/hardhat-docker";
-import { ChildProcess, spawn, spawnSync } from "child_process";
+import { ChildProcess, CommonSpawnOptions, spawn, spawnSync } from "child_process";
 import { ExternalServer } from "./external-server";
 
 export abstract class DockerServer extends ExternalServer {
@@ -33,10 +33,11 @@ export abstract class DockerServer extends ExternalServer {
         }
     }
 
-    protected async spawnChildProcess(): Promise<ChildProcess> {
+    protected async spawnChildProcess(options?: CommonSpawnOptions): Promise<ChildProcess> {
         await this.pullImage();
 
         const formattedImage = `${this.image.repository}:${this.image.tag}`;
+
         const args = [
             "run",
             "--rm",
@@ -46,7 +47,8 @@ export abstract class DockerServer extends ExternalServer {
             formattedImage,
             ...(await this.getContainerArgs())
         ];
-        return spawn("docker", args);
+
+        return spawn("docker", args, options);
     }
 
     /**

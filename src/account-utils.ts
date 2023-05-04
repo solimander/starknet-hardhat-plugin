@@ -1,23 +1,29 @@
-import { iterativelyCheckStatus, StarknetContract, StringMap } from "./types";
-import { toBN } from "starknet/utils/number";
-import * as ellipticCurve from "starknet/utils/ellipticCurve";
+import axios, { AxiosError } from "axios";
+import crypto from "crypto";
 import { ec } from "elliptic";
+import fs from "fs";
 import { HardhatRuntimeEnvironment } from "hardhat/types";
-import * as fs from "fs";
 import path from "path";
+import { ec as ellipticCurve, hash, number } from "starknet";
+
 import {
     ABI_SUFFIX,
     INTERNAL_ARTIFACTS_DIR,
     TransactionHashPrefix,
     TRANSACTION_VERSION,
-    StarknetChainId
+    StarknetChainId,
+    DECLARE_VERSION
 } from "./constants";
-import { numericToHexString } from "./utils";
-import * as crypto from "crypto";
-import { hash } from "starknet";
-import axios, { AxiosError } from "axios";
 import { StarknetPluginError } from "./starknet-plugin-error";
 import * as starknet from "./starknet-types";
+import {
+    Cairo1ContractClass,
+    iterativelyCheckStatus,
+    Numeric,
+    StarknetContract,
+    StringMap
+} from "./types";
+import { numericToHexString } from "./utils";
 
 export type CallParameters = {
     toContract: StarknetContract;
@@ -41,7 +47,7 @@ export function generateRandomStarkPrivateKey(length = 63) {
     for (let i = 0; i < length; ++i) {
         result += characters.charAt(crypto.randomInt(characters.length));
     }
-    return toBN(result, "hex");
+    return number.toBN(result, "hex");
 }
 
 export function signMultiCall(
@@ -122,7 +128,7 @@ function ensureArtifact(fileName: string, artifactsTargetPath: string, artifactS
  */
 export function generateKeys(providedPrivateKey?: string): KeysType {
     const starkPrivateKey = providedPrivateKey
-        ? toBN(providedPrivateKey.replace(/^0x/, ""), 16)
+        ? number.toBN(providedPrivateKey.replace(/^0x/, ""), 16)
         : generateRandomStarkPrivateKey();
     const keyPair = ellipticCurve.getKeyPair(starkPrivateKey);
     const publicKey = ellipticCurve.getStarkKey(keyPair);
@@ -172,8 +178,64 @@ export async function sendDeployAccountTx(
             version: numericToHexString(TRANSACTION_VERSION),
             type: "DEPLOY_ACCOUNT"
         })
-        .catch((error: AxiosError) => {
+        .catch((error: AxiosError<starknet.StarkError>) => {
             const msg = `Deploying account failed: ${error.response.data.message}`;
+            throw new StarknetPluginError(msg, error);
+        });
+
+    return new Promise<string>((resolve, reject) => {
+        iterativelyCheckStatus(
+            resp.data.transaction_hash,
+            hre.starknetWrapper,
+            () => resolve(resp.data.transaction_hash),
+            reject
+        );
+    });
+}
+
+export function calculateDeclareV2TxHash(
+    accountAddress: string,
+    callData: string[],
+    maxFee: string,
+    chainId: StarknetChainId,
+    additionalData: string[]
+) {
+    const calldataHash = hash.computeHashOnElements(callData);
+    return hash.computeHashOnElements([
+        TransactionHashPrefix.DECLARE,
+        numericToHexString(DECLARE_VERSION),
+        accountAddress,
+        0, // entrypoint selector is implied
+        calldataHash,
+        maxFee,
+        chainId,
+        ...additionalData
+    ]);
+}
+
+export async function sendDeclareV2Tx(
+    signatures: string[],
+    classHash: string,
+    maxFee: Numeric,
+    senderAddress: string,
+    version: Numeric,
+    nonce: Numeric,
+    contractClass: Cairo1ContractClass
+) {
+    const hre = await import("hardhat");
+    const resp = await axios
+        .post(`${hre.starknet.networkConfig.url}/gateway/add_transaction`, {
+            type: "DECLARE",
+            contract_class: contractClass.getCompiledClass(),
+            signature: signatures,
+            sender_address: senderAddress,
+            compiled_class_hash: number.toHex(number.toBN(classHash)),
+            version: numericToHexString(version),
+            nonce: numericToHexString(nonce),
+            max_fee: numericToHexString(maxFee)
+        })
+        .catch((error: AxiosError<starknet.StarkError>) => {
+            const msg = `Declaring contract failed: ${error.response.data.message}`;
             throw new StarknetPluginError(msg, error);
         });
 
@@ -195,10 +257,12 @@ export async function sendEstimateFeeTx(data: unknown) {
         return this.toString();
     };
 
-    const resp = await axios.post(
-        `${hre.starknet.networkConfig.url}/feeder_gateway/estimate_fee`,
-        data
-    );
+    const resp = await axios
+        .post(`${hre.starknet.networkConfig.url}/feeder_gateway/estimate_fee`, data)
+        .catch((error: AxiosError<starknet.StarkError>) => {
+            const msg = `Estimating fees failed: ${error.response.data.message}`;
+            throw new StarknetPluginError(msg, error);
+        });
 
     const { gas_price, gas_usage, overall_fee, unit } = resp.data;
     return {
