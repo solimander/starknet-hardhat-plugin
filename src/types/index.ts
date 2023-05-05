@@ -213,7 +213,10 @@ export async function iterativelyCheckStatus(
  */
 function readAbi(abiPath: string): starknet.Abi {
     const abiRaw = fs.readFileSync(abiPath).toString();
-    const abiArray = JSON.parse(abiRaw);
+    let abiArray = JSON.parse(abiRaw);
+    if (!Array.isArray(abiArray)) {
+        abiArray = abiArray.abi;
+    }
     const abi: starknet.Abi = {};
     for (const abiEntry of abiArray) {
         if (!abiEntry.name) {
@@ -385,10 +388,11 @@ export class StarknetContractFactory {
         }
 
         const casmJson = JSON.parse(fs.readFileSync(this.casmPath, "utf-8"));
-        if (casmJson?.compiler_version.split(".")[0] !== "1") {
-            const msg = ".CASM json has to contain compiler_version '1.*.*'";
-            throw new StarknetPluginError(msg);
-        }
+        // This is not present in the Scarb output. Comment for now.
+        // if (casmJson?.compiler_version.split(".")[0] !== "1") {
+        //     const msg = ".CASM json has to contain compiler_version '1.*.*'";
+        //     throw new StarknetPluginError(msg);
+        // }
 
         if (!casmJson?.entry_points_by_type?.CONSTRUCTOR) {
             const msg = "Invalid .CASM structure: No CONSTRUCTOR in entry_points_by_type";
@@ -403,7 +407,7 @@ export class StarknetContractFactory {
 
         // Can be simplified once starkware fixes multiple constructor issue.
         // Precomputed selector can be used if only 'constructor' name allowed
-        const selector = casmJson.entry_points_by_type.CONSTRUCTOR[0].selector;
+        const selector = casmJson.entry_points_by_type.CONSTRUCTOR[0]?.selector;
         return (abiEntry: starknet.AbiEntry): boolean => {
             return hash.getSelectorFromName(abiEntry.name) === selector;
         };

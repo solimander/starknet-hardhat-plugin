@@ -312,7 +312,7 @@ export function readCairo1Contract(contractPath: string) {
     const contract = new Cairo1ContractClass({
         abiPath: path.join(
             path.dirname(contractPath),
-            `${path.parse(contractPath).name}${ABI_SUFFIX}`
+            `${path.parse(contractPath).name}.json`
         ),
         sierraProgram: stark.compressProgram(formatSpaces(JSON.stringify(sierra_program))),
         entryPointsByType: entry_points_by_type,
