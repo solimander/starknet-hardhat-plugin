@@ -48,6 +48,7 @@ import {
     estimatedFeeToMaxFee,
     readCairo1Contract
 } from "./utils";
+import fs from "fs";
 
 type ExecuteCallParameters = {
     to: bigint;
@@ -482,6 +483,10 @@ export abstract class Account {
         const version = DECLARE_VERSION;
         const nonce = options.nonce == null ? await this.getNonce() : options.nonce;
         const hre = await import("hardhat");
+        if (options.constants) {
+            contractFactory.metadataPath = this.writeConstantsToOutputV2(contractFactory.metadataPath, options.constants);
+        }
+
         const chainId = hre.starknet.networkConfig.starknetChainId;
 
         const compiledClassHash = await hre.starknetWrapper.getCompiledClassHash(
@@ -510,6 +515,23 @@ export abstract class Account {
             nonce,
             readCairo1Contract(contractFactory.metadataPath)
         );
+    }
+
+    private writeConstantsToOutputV2(metadataPath: string, constants: Record<string, string>): string {
+        const secondaryExts = [".sierra", ".casm"];
+        for (const ext of secondaryExts) {
+            const metadataToUpdate = metadataPath.replace(/(\.[^.]*)(\.[^.]+)$/, `${ext}$2`);
+
+            let output = fs.readFileSync(metadataToUpdate, "utf8");
+            for (const [valueToReplace, replacement] of Object.entries(constants)) {
+                output = output.replace(
+                    new RegExp(`"0x${number.toBN(valueToReplace).toString(16)}"`, "g"),
+                    `"0x${number.toBN(replacement).toString(16)}"`
+                );
+            }
+            fs.writeFileSync(metadataToUpdate.replace(".json", "_generated.json"), output);
+        }
+        return metadataPath.replace(".json", "_generated.json");
     }
 }
 

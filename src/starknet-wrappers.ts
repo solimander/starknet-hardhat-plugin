@@ -545,7 +545,7 @@ export abstract class StarknetWrapper {
     }
 
     public async getCompiledClassHash(casmPath: string): Promise<string> {
-        const executed = await this.execute("get_compiled_class_hash", [casmPath]);
+        const executed = await this.execute("get_compiled_class_hash", [this.getUpdatedCasmPath(casmPath)]);
         if (executed.statusCode) {
             throw new StarknetPluginError(executed.stderr.toString());
         }
@@ -553,11 +553,19 @@ export abstract class StarknetWrapper {
     }
 
     public async getSierraContractClassHash(casmPath: string): Promise<string> {
-        const executed = await this.execute("get_contract_class_hash", [casmPath]);
+        const executed = await this.execute("get_contract_class_hash", [this.getUpdatedCasmPath(casmPath)]);
         if (executed.statusCode) {
             throw new StarknetPluginError(executed.stderr.toString());
         }
         return executed.stdout.toString().trim();
+    }
+
+    private getUpdatedCasmPath(casmPath: string) {
+        const generatedCasmPath = casmPath.replace(".json", "_generated.json");
+        if (fs.existsSync(generatedCasmPath)) {
+            return generatedCasmPath;
+        }
+        return casmPath;
     }
 
     public async migrateContract(options: MigrateContractWrapperOptions): Promise<ProcessResult> {
