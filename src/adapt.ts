@@ -13,7 +13,6 @@ const COMMON_NUMERIC_TYPES = [
     "core::integer::u32",
     "core::integer::u64",
     "core::integer::u128",
-    "core::integer::u256",
     "core::starknet::contract_address::ContractAddress",
     "core::starknet::class_hash::ClassHash",
     "core::starknet::eth_address::EthAddress"
