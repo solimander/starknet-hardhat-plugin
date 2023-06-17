@@ -21,6 +21,9 @@ const COMMON_NUMERIC_TYPES = [
 const ARRAY_TYPE_PREFIX = "core::array::Array::<";
 const ARRAY_TYPE_SUFFIX = ">";
 
+const SPAN_TYPE_PREFIX = "core::array::Span::<";
+const SPAN_TYPE_SUFFIX = ">";
+
 function isNumeric(value: { toString: () => string }) {
     if (value === undefined || value === null) {
         return false;
@@ -53,6 +56,10 @@ function isArrayDeprecated(type: string): boolean {
 
 function isArray(type: string): boolean {
     return type.startsWith(ARRAY_TYPE_PREFIX) && type.endsWith(ARRAY_TYPE_SUFFIX);
+}
+
+function isSpan(type: string): boolean {
+    return type.startsWith(SPAN_TYPE_PREFIX) && type.endsWith(SPAN_TYPE_SUFFIX);
 }
 
 function isBool(type: string): boolean {
@@ -283,6 +290,25 @@ export function adaptInputUtil(
                 type: inputSpec.type.slice(
                     ARRAY_TYPE_PREFIX.length,
                     inputSpec.type.length - ARRAY_TYPE_SUFFIX.length
+                )
+            };
+
+            adapted.push(currentValue.length.toString());
+            for (const element of currentValue) {
+                adaptComplexInput(element, inputSpecArrayElement, abi, adapted);
+            }
+        } else if (isSpan(inputSpec.type)) {
+            if (!Array.isArray(currentValue)) {
+                const msg = `${functionName}: Expected ${inputSpec.name} to be a ${inputSpec.type}`;
+                throw new StarknetPluginError(msg);
+            }
+
+            // Strip the core::Array::array prefix and suffix
+            const inputSpecArrayElement = {
+                name: inputSpec.name,
+                type: inputSpec.type.slice(
+                    SPAN_TYPE_PREFIX.length,
+                    inputSpec.type.length - SPAN_TYPE_SUFFIX.length
                 )
             };
 
